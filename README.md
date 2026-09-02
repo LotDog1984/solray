@@ -1,2 +1,0 @@
-# Solray
-Team & Task Manager

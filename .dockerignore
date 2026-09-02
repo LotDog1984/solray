@@ -1,0 +1,11 @@
+# These are platform-only symlinks / build artifacts that must NOT be
+# copied into the Docker image (they would overwrite the real deps and
+# lockfile installed during the build).
+nextjs_space/node_modules
+nextjs_space/yarn.lock
+nextjs_space/.next
+nextjs_space/.build
+nextjs_space/.turbo
+**/.DS_Store
+**/*.log
+.git

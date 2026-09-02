@@ -1,0 +1,52 @@
+# ============================================================
+# Solray - GitHub build compose
+# ------------------------------------------------------------
+# This compose file builds the app DIRECTLY from your GitHub repo.
+# Docker clones the repo, builds the image from the Dockerfile at
+# its root, and runs it. Nothing but this file needs to live on
+# the server.
+#
+# On the server:
+#   1. Put this file in your Dockge stack folder as compose.yaml
+#   2. Create a .env next to it with your NEXTAUTH_SECRET
+#   3. Deploy. To update later: Dockge -> rebuild (pulls latest git).
+# ============================================================
+
+services:
+  app:
+    build:
+      # Builds from the main branch of your GitHub repository.
+      # Change the URL/branch if your repo name or branch differs.
+      context: https://github.com/LotDog1984/solray.git#main
+    container_name: solray_app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://solray:solray_pass@db:5432/solray
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-to-a-random-64-char-secret}
+      AUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-to-a-random-64-char-secret}
+      NEXTAUTH_URL: https://app.mediahost.stream
+      AUTH_URL: https://app.mediahost.stream
+      FILE_UPLOAD_BASE: /mnt/nas/solray
+    volumes:
+      - /mnt/nas/solray:/mnt/nas/solray
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    container_name: solray_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: solray
+      POSTGRES_USER: solray
+      POSTGRES_PASSWORD: solray_pass
+    volumes:
+      - /mnt/docker/apps/solray/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U solray"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
