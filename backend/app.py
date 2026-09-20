@@ -1,0 +1,931 @@
+import os
+import re
+import shutil
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Annotated
+
+import requests
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine, 
+    select, 
+    func,
+    or_,
+    text,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
+
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg2://workspace:workspace_password@localhost:5432/workspace")
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
+JWT_ALGORITHM = "HS256"
+STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "./uploads"))
+NTFY_URL = os.getenv("NTFY_URL", "").rstrip("/")
+CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:8080").split(",")]
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+passwords = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(80))
+    password_hash: Mapped[str] = mapped_column(String(255))
+    ntfy_topic: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # Flag indicating whether this account has administrative privileges.
+    # Only admins may create new users via the API. The default is ``False`` so
+    # that existing accounts remain unchanged unless explicitly promoted.
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class Project(Base):
+    __tablename__ = "projects"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    boards: Mapped[list["Board"]] = relationship(cascade="all, delete-orphan", order_by="Board.created_at")
+
+
+class Board(Base):
+    __tablename__ = "boards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    columns: Mapped[list["BoardColumn"]] = relationship(cascade="all, delete-orphan", order_by="BoardColumn.position")
+
+
+class BoardColumn(Base):
+    __tablename__ = "columns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    board_id: Mapped[int] = mapped_column(ForeignKey("boards.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(80))
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    tasks: Mapped[list["Task"]] = relationship(cascade="all, delete-orphan", order_by="Task.position")
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    column_id: Mapped[int] = mapped_column(ForeignKey("columns.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str] = mapped_column(Text, default="")
+    assignee_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    assignee: Mapped[User | None] = relationship(foreign_keys=[assignee_id])
+
+
+class StoredFile(Base):
+    __tablename__ = "files"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    original_name: Mapped[str] = mapped_column(String(255))
+    stored_name: Mapped[str] = mapped_column(String(255), unique=True)
+    content_type: Mapped[str] = mapped_column(String(160), default="application/octet-stream")
+    size: Mapped[int] = mapped_column(Integer)
+    uploaded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    uploaded_by: Mapped[User] = relationship()
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    message: Mapped[str] = mapped_column(String(255))
+    link: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+
+
+class BoardMember(Base):
+    __tablename__ = "board_members"
+    __table_args__ = (UniqueConstraint("board_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    board_id: Mapped[int] = mapped_column(ForeignKey("boards.id", ondelete="CASCADE"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    username: str
+    display_name: str
+    ntfy_topic: str | None = None
+    is_admin: bool = False
+
+
+class RegisterIn(BaseModel):
+    username: str
+    display_name: str
+    password: str
+
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+class BoardIn(BaseModel):
+    name: str
+    project_id: int | None = None
+
+
+class ProjectIn(BaseModel):
+    name: str
+
+
+class ColumnIn(BaseModel):
+    board_id: int
+    name: str
+    position: int = 0
+
+
+class TaskIn(BaseModel):
+    column_id: int
+    title: str
+    description: str = ""
+    assignee_id: int | None = None
+    position: int = 0
+
+
+class TaskMoveIn(BaseModel):
+    column_id: int
+    position: int = 0
+
+
+class NtfyIn(BaseModel):
+    topic: str | None = None
+
+
+DEFAULT_APP_NAME = "Private Workspace"
+APP_NAME_KEY = "app_name"
+DEFAULT_COLUMNS_KEY = "default_columns"
+DEFAULT_COLUMNS = ["Backlog", "U tijeku", "Gotovo"]
+
+
+class SettingsOut(BaseModel):
+    app_name: str = DEFAULT_APP_NAME
+    default_columns: list[str] = DEFAULT_COLUMNS
+
+
+class SettingsIn(BaseModel):
+    app_name: str
+    default_columns: list[str] | None = None
+
+
+def get_default_columns(db: Session) -> list[str]:
+    raw = get_setting(db, DEFAULT_COLUMNS_KEY)
+    if not raw:
+        return list(DEFAULT_COLUMNS)
+    names = [line.strip() for line in raw.splitlines() if line.strip()]
+    return names or list(DEFAULT_COLUMNS)
+
+
+def db_session():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+Db = Annotated[Session, Depends(db_session)]
+
+
+def create_token(user: User) -> str:
+    expires = datetime.now(timezone.utc) + timedelta(days=7)
+    return jwt.encode({"sub": str(user.id), "exp": expires}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def current_user(token: Annotated[str, Depends(oauth2_scheme)], db: Db) -> User:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = int(payload["sub"])
+    except (JWTError, KeyError, ValueError):
+        raise HTTPException(status_code=401, detail="Neispravan token")
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="Korisnik ne postoji")
+    return user
+
+
+CurrentUser = Annotated[User, Depends(current_user)]
+
+
+def ensure_board_access(db: Session, user: User, board_id: int) -> Board:
+    board = db.get(Board, board_id)
+    if not board:
+        raise HTTPException(status_code=404, detail="Ploča ne postoji")
+    if board.owner_id == user.id:
+        return board
+    member = db.scalar(select(BoardMember).where(BoardMember.board_id == board_id, BoardMember.user_id == user.id))
+    if not member:
+        raise HTTPException(status_code=403, detail="Nemate pristup ovoj ploči")
+    return board
+
+
+def task_board_id(db: Session, column_id: int) -> int:
+    column = db.get(BoardColumn, column_id)
+    if not column:
+        raise HTTPException(status_code=404, detail="Kolona ne postoji")
+    return column.board_id
+
+
+def send_ntfy(user: User, title: str, message: str) -> None:
+    if not NTFY_URL or not user.ntfy_topic:
+        return
+    safe_topic = re.sub(r"[^A-Za-z0-9_-]", "", user.ntfy_topic)
+    if not safe_topic:
+        return
+    try:
+        requests.post(
+            f"{NTFY_URL}/{safe_topic}",
+            data=message.encode("utf-8"),
+            headers={"Title": title.encode("utf-8").decode("latin1", "ignore")},
+            timeout=3,
+        )
+    except requests.RequestException:
+        pass
+
+
+def notify_mentions(db: Session, actor: User, task: Task) -> None:
+    usernames = set(re.findall(r"@([A-Za-z0-9_.-]{2,40})", f"{task.title} {task.description}"))
+    if not usernames:
+        return
+    users = db.scalars(select(User).where(User.username.in_(usernames), User.id != actor.id)).all()
+    for user in users:
+        message = f"{actor.display_name} vas je tagirao/la u tasku: {task.title}"
+        db.add(Notification(user_id=user.id, message=message, link=f"/tasks/{task.id}"))
+        send_ntfy(user, "Novi tag", message)
+
+
+app = FastAPI(title="Private Workspace")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+def startup() -> None:
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    Base.metadata.create_all(bind=engine)
+    # Migration: boards.project_id was added later; ensure the column exists on
+    # databases created before projects were introduced.
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE boards ADD COLUMN IF NOT EXISTS project_id INTEGER"))
+    # Backfill: put every existing board into a default project so nothing is lost.
+    db = SessionLocal()
+    try:
+        orphan_count = db.scalar(select(func.count()).select_from(Board).where(Board.project_id.is_(None)))  # type: ignore
+        if orphan_count:
+            first_board = db.scalar(select(Board).where(Board.project_id.is_(None)).order_by(Board.created_at))
+            owner_id = first_board.owner_id if first_board else (db.scalar(select(User.id).order_by(User.id)) or 1)
+            project = db.scalar(select(Project).where(Project.name == "Glavni projekt", Project.owner_id == owner_id))
+            if not project:
+                project = Project(name="Glavni projekt", owner_id=owner_id)
+                db.add(project)
+                db.flush()
+            db.execute(
+                Board.__table__.update().where(Board.project_id.is_(None)).values(project_id=project.id)
+            )
+            db.commit()
+    finally:
+        db.close()
+
+
+@app.get("/api/auth/status")
+def auth_status(db: Db):
+    """Public info for the login screen: is first-run registration still open?"""
+    user_count = db.scalar(select(func.count()).select_from(User))  # type: ignore
+    return {"registration_open": not user_count}
+
+
+def get_setting(db: Session, key: str) -> str | None:
+    row = db.get(Setting, key)
+    return row.value if row else None
+
+
+@app.get("/api/settings", response_model=SettingsOut)
+def read_settings(db: Db):
+    """Public: app name is shown on the login screen before authenticating."""
+    return SettingsOut(
+        app_name=get_setting(db, APP_NAME_KEY) or DEFAULT_APP_NAME,
+        default_columns=get_default_columns(db),
+    )
+
+
+@app.put("/api/settings", response_model=SettingsOut)
+def update_settings(payload: SettingsIn, db: Db, user: CurrentUser):
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Nemate dozvolu za mijenjanje postavki")
+    name = payload.app_name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Naziv ne može biti prazan")
+    if len(name) > 80:
+        raise HTTPException(status_code=400, detail="Naziv je predugačak (max 80 znakova)")
+    row = db.get(Setting, APP_NAME_KEY)
+    if row:
+        row.value = name
+    else:
+        row = Setting(key=APP_NAME_KEY, value=name)
+        db.add(row)
+
+    if payload.default_columns is not None:
+        names = []
+        for raw in payload.default_columns:
+            cleaned = raw.strip()
+            if not cleaned:
+                continue
+            if len(cleaned) > 80:
+                raise HTTPException(status_code=400, detail="Naziv kolone je predugačak (max 80 znakova)")
+            if any(cleaned.lower() == existing.lower() for existing in names):
+                continue
+            names.append(cleaned)
+        if not names:
+            raise HTTPException(status_code=400, detail="Potrebna je barem jedna kolona")
+        if len(names) > 20:
+            raise HTTPException(status_code=400, detail="Najviše 20 kolona")
+        value = "\n".join(names)
+        col_row = db.get(Setting, DEFAULT_COLUMNS_KEY)
+        if col_row:
+            col_row.value = value
+        else:
+            db.add(Setting(key=DEFAULT_COLUMNS_KEY, value=value))
+
+    db.commit()
+    return SettingsOut(
+        app_name=name,
+        default_columns=get_default_columns(db),
+    )
+
+
+@app.post("/api/auth/register", response_model=TokenResponse)
+def register(payload: RegisterIn, db: Db):
+    username = payload.username.strip().lower()
+    if not re.fullmatch(r"[a-z0-9_.-]{2,40}", username):
+        raise HTTPException(status_code=400, detail="Korisničko ime smije imati slova, brojeve, točku, crticu i podvlaku")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="Lozinka mora imati barem 8 znakova")
+    # Only allow registration when the database is empty (first user).  All
+    # subsequent users must be created by an authenticated admin via a different
+    # endpoint.
+    existing_user = db.scalar(select(User).where(User.username == username))
+    if existing_user:
+        raise HTTPException(status_code=409, detail="Korisnik već postoji")
+
+    user_count = db.scalar(select(func.count()).select_from(User))  # type: ignore
+    if user_count and user_count > 0:
+        # After the first user exists we block registration.
+        raise HTTPException(status_code=403, detail="Registracija je zabranjena")
+    new_user = User(
+        username=username,
+        display_name=payload.display_name.strip() or username,
+        password_hash=passwords.hash(payload.password),
+        is_admin=(user_count == 0)  # first user becomes admin
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return TokenResponse(access_token=create_token(new_user))
+
+
+@app.post("/api/auth/login", response_model=TokenResponse)
+def login(payload: LoginIn, db: Db):
+    user = db.scalar(select(User).where(User.username == payload.username.strip().lower()))
+    if not user or not passwords.verify(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Neispravno korisničko ime ili lozinka")
+    return TokenResponse(access_token=create_token(user))
+
+
+@app.get("/api/me", response_model=UserOut)
+def me(user: CurrentUser):
+    return user
+
+
+@app.patch("/api/me/ntfy", response_model=UserOut)
+def update_ntfy(payload: NtfyIn, db: Db, user: CurrentUser):
+    user.ntfy_topic = payload.topic.strip() if payload.topic else None
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@app.get("/api/users", response_model=list[UserOut])
+def users(db: Db, _: CurrentUser):
+    return db.scalars(select(User).order_by(User.username)).all()
+
+
+@app.post("/api/users", response_model=UserOut)
+def create_user(payload: RegisterIn, db: Db, user: CurrentUser):
+    # Only allow admin users to create new users
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Nemate dozvolu za stvaranje korisnika")
+    
+    existing = db.scalar(select(User).where(User.username == payload.username.strip().lower()))
+    if existing:
+        raise HTTPException(status_code=409, detail="Korisničko ime već postoji")
+
+    new_user = User(
+        username=payload.username.strip().lower(),
+        display_name=payload.display_name.strip() or payload.username.strip(),
+        password_hash=passwords.hash(payload.password),
+        is_admin=False,
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: int, db: Db, user: CurrentUser):
+    # Only allow admin users to delete other users
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Nemate dozvolu za brisanje korisnika")
+    
+    target = db.get(User, user_id)
+    if not target or target.id == user.id:
+        raise HTTPException(status_code=404, detail="Korisnik ne postoji")
+        
+    # Don't allow deletion of admin users (except self for security)
+    if target.is_admin and target.id != user.id:
+        raise HTTPException(status_code=403, detail="Nemate dozvolu za brisanje administratora")
+
+    db.delete(target)
+    db.commit()
+    return {"ok": True}
+
+
+def ensure_project_manage(db: Session, user: User, project: Project) -> None:
+    if project.owner_id != user.id and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Nemate dozvolu za upravljanje projektom")
+
+
+@app.get("/api/projects")
+def list_projects(db: Db, user: CurrentUser):
+    board_rows = db.execute(
+        select(Board)
+        .outerjoin(BoardMember, BoardMember.board_id == Board.id)
+        .where((Board.owner_id == user.id) | (BoardMember.user_id == user.id))
+        .order_by(Board.created_at)
+    ).scalars().unique().all()
+    visible_projects = {b.project_id for b in board_rows}
+    projects = db.scalars(select(Project).order_by(Project.created_at)).all()
+    out = []
+    for project in projects:
+        if project.owner_id != user.id and project.id not in visible_projects and not user.is_admin:
+            continue
+        boards = [
+            {"id": b.id, "name": b.name, "project_id": b.project_id}
+            for b in board_rows
+            if b.project_id == project.id
+        ]
+        out.append({"id": project.id, "name": project.name, "boards": boards})
+    return out
+
+
+@app.post("/api/projects")
+def create_project(payload: ProjectIn, db: Db, user: CurrentUser):
+    project = Project(name=payload.name.strip()[:120] or "Novi projekt", owner_id=user.id)
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return {"id": project.id, "name": project.name}
+
+
+@app.patch("/api/projects/{project_id}")
+def rename_project(project_id: int, payload: ProjectIn, db: Db, user: CurrentUser):
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Projekt ne postoji")
+    ensure_project_manage(db, user, project)
+    project.name = payload.name.strip()[:120] or project.name
+    db.commit()
+    return {"id": project.id, "name": project.name}
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: int, db: Db, user: CurrentUser):
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Projekt ne postoji")
+    ensure_project_manage(db, user, project)
+    # ORM cascade removes boards -> columns -> tasks; board_members rows go
+    # through the FK ON DELETE CASCADE.
+    db.delete(project)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/boards")
+def create_board(payload: BoardIn, db: Db, user: CurrentUser):
+    if payload.project_id is not None:
+        project = db.get(Project, payload.project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Projekt ne postoji")
+        ensure_project_manage(db, user, project)
+    else:
+        project = db.scalar(
+            select(Project).where(Project.owner_id == user.id).order_by(Project.created_at)
+        )
+        if not project:
+            project = Project(name="Glavni projekt", owner_id=user.id)
+            db.add(project)
+            db.flush()
+    board = Board(name=payload.name.strip() or "Nova ploča", owner_id=user.id, project_id=project.id)
+    db.add(board)
+    db.flush()
+    db.add_all(
+        BoardColumn(board_id=board.id, name=name, position=position)
+        for position, name in enumerate(get_default_columns(db))
+    )
+    db.commit()
+    return {"id": board.id, "name": board.name, "project_id": board.project_id}
+
+
+@app.get("/api/boards")
+def list_boards(db: Db, user: CurrentUser):
+    rows = db.execute(
+        select(Board)
+        .outerjoin(BoardMember, BoardMember.board_id == Board.id)
+        .where((Board.owner_id == user.id) | (BoardMember.user_id == user.id))
+        .order_by(Board.created_at.desc())
+    ).scalars().unique().all()
+    return [{"id": b.id, "name": b.name, "owner_id": b.owner_id, "project_id": b.project_id} for b in rows]
+
+
+@app.get("/api/search")
+def search_everything(db: Db, user: CurrentUser, q: str = ""):
+    query = (q or "").strip()
+    if len(query) < 2:
+        return {"results": []}
+    like = f"%{query}%"
+    lowered = query.lower()
+
+    # Boards the user may see (owner, member, or admin) — same rule as list_boards.
+    if user.is_admin:
+        board_rows = db.scalars(select(Board)).all()
+    else:
+        board_rows = (
+            db.execute(
+                select(Board)
+                .outerjoin(BoardMember, BoardMember.board_id == Board.id)
+                .where((Board.owner_id == user.id) | (BoardMember.user_id == user.id))
+            )
+            .scalars()
+            .unique()
+            .all()
+        )
+
+    project_ids = {b.project_id for b in board_rows if b.project_id}
+    if not user.is_admin:
+        project_ids.update(
+            db.scalars(select(Project.id).where(Project.owner_id == user.id)).all()
+        )
+    projects = (
+        db.scalars(select(Project)).all()
+        if user.is_admin
+        else (
+            db.scalars(select(Project).where(Project.id.in_(project_ids))).all()
+            if project_ids
+            else []
+        )
+    )
+    project_map = {p.id: p for p in projects}
+
+    results = []
+
+    # 1) Projects (only ones the user owns or that contain visible boards)
+    for project in projects:
+        if lowered in project.name.lower():
+            results.append(
+                {
+                    "type": "project",
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "label": project.name,
+                    "detail": "Projekt",
+                }
+            )
+
+    # 2) Boards
+    for board in board_rows:
+        if lowered in board.name.lower():
+            project = project_map.get(board.project_id)
+            results.append(
+                {
+                    "type": "board",
+                    "project_id": board.project_id,
+                    "project_name": project.name if project else "",
+                    "board_id": board.id,
+                    "board_name": board.name,
+                    "label": board.name,
+                    "detail": f"Ploča · {project.name if project else 'bez projekta'}",
+                }
+            )
+
+    # 3) Tasks (title + description) inside visible boards
+    board_ids = [b.id for b in board_rows]
+    if board_ids:
+        task_rows = db.execute(
+            select(Task, BoardColumn)
+            .join(BoardColumn, Task.column_id == BoardColumn.id)
+            .where(BoardColumn.board_id.in_(board_ids))
+            .where(or_(Task.title.ilike(like), Task.description.ilike(like)))
+            .order_by(Task.created_at.desc())
+            .limit(50)
+        ).all()
+        for task, column in task_rows:
+            board = next((b for b in board_rows if b.id == column.board_id), None)
+            project = project_map.get(board.project_id) if board else None
+            description = task.description or ""
+            snippet = ""
+            if description:
+                idx = description.lower().find(lowered)
+                if idx >= 0:
+                    start = max(0, idx - 40)
+                    snippet = (
+                        ("…" if start > 0 else "")
+                        + description[start : idx + len(query) + 60].strip()
+                        + "…"
+                    )
+                else:
+                    snippet = description[:120] + ("…" if len(description) > 120 else "")
+            results.append(
+                {
+                    "type": "task",
+                    "project_id": board.project_id if board else None,
+                    "project_name": project.name if project else "",
+                    "board_id": board.id if board else None,
+                    "board_name": board.name if board else "",
+                    "task_id": task.id,
+                    "label": task.title,
+                    "detail": f"Zadatak · {board.name if board else ''} · {column.name}",
+                    "snippet": snippet,
+                }
+            )
+
+    return {"results": results}
+
+
+@app.get("/api/boards/{board_id}")
+def get_board(board_id: int, db: Db, user: CurrentUser):
+    board = ensure_board_access(db, user, board_id)
+    return {
+        "id": board.id,
+        "name": board.name,
+        "columns": [
+            {
+                "id": col.id,
+                "name": col.name,
+                "position": col.position,
+                "tasks": [
+                    {
+                        "id": task.id,
+                        "title": task.title,
+                        "description": task.description,
+                        "assignee_id": task.assignee_id,
+                        "assignee": task.assignee.display_name if task.assignee else None,
+                        "position": task.position,
+                    }
+                    for task in col.tasks
+                ],
+            }
+            for col in board.columns
+        ],
+    }
+
+
+@app.patch("/api/boards/{board_id}")
+def update_board(board_id: int, payload: BoardIn, db: Db, user: CurrentUser):
+    board = db.get(Board, board_id)
+    if not board:
+        raise HTTPException(status_code=404, detail="Ploča ne postoji")
+    if board.owner_id != user.id and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Nemate dozvolu za uređivanje ploče")
+    board.name = payload.name.strip() or board.name
+    if payload.project_id is not None and payload.project_id != board.project_id:
+        project = db.get(Project, payload.project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Projekt ne postoji")
+        ensure_project_manage(db, user, project)
+        board.project_id = project.id
+    db.commit()
+    return {"id": board.id, "name": board.name, "project_id": board.project_id}
+
+
+@app.delete("/api/boards/{board_id}")
+def delete_board(board_id: int, db: Db, user: CurrentUser):
+    board = db.get(Board, board_id)
+    if not board:
+        raise HTTPException(status_code=404, detail="Ploča ne postoji")
+    if board.owner_id != user.id and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Nemate dozvolu za brisanje ploče")
+    db.delete(board)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/boards/{board_id}/members")
+def add_member(board_id: int, db: Db, user: CurrentUser, username: Annotated[str, Form(...)]):
+    board = ensure_board_access(db, user, board_id)
+    if board.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Samo vlasnik može dodavati članove")
+    member = db.scalar(select(User).where(User.username == username.strip().lower()))
+    if not member:
+        raise HTTPException(status_code=404, detail="Korisnik ne postoji")
+    if member.id == board.owner_id:
+        return {"ok": True}
+    exists = db.scalar(select(BoardMember).where(BoardMember.board_id == board_id, BoardMember.user_id == member.id))
+    if not exists:
+        db.add(BoardMember(board_id=board_id, user_id=member.id))
+        db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/columns")
+def create_column(payload: ColumnIn, db: Db, user: CurrentUser):
+    ensure_board_access(db, user, payload.board_id)
+    column = BoardColumn(board_id=payload.board_id, name=payload.name.strip() or "Nova kolona", position=payload.position)
+    db.add(column)
+    db.commit()
+    db.refresh(column)
+    return {"id": column.id, "name": column.name, "position": column.position}
+
+
+@app.post("/api/tasks")
+def create_task(payload: TaskIn, db: Db, user: CurrentUser):
+    board_id = task_board_id(db, payload.column_id)
+    ensure_board_access(db, user, board_id)
+    task = Task(
+        column_id=payload.column_id,
+        title=payload.title.strip() or "Novi task",
+        description=payload.description,
+        assignee_id=payload.assignee_id,
+        position=payload.position,
+        created_by_id=user.id,
+    )
+    db.add(task)
+    db.flush()
+    notify_mentions(db, user, task)
+    db.commit()
+    db.refresh(task)
+    return {"id": task.id}
+
+
+@app.patch("/api/tasks/{task_id}")
+def update_task(task_id: int, payload: TaskIn, db: Db, user: CurrentUser):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task ne postoji")
+    ensure_board_access(db, user, task_board_id(db, task.column_id))
+    task.column_id = payload.column_id
+    task.title = payload.title.strip() or task.title
+    task.description = payload.description
+    task.assignee_id = payload.assignee_id
+    task.position = payload.position
+    notify_mentions(db, user, task)
+    db.commit()
+    return {"ok": True}
+
+
+@app.patch("/api/tasks/{task_id}/move")
+def move_task(task_id: int, payload: TaskMoveIn, db: Db, user: CurrentUser):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task ne postoji")
+    ensure_board_access(db, user, task_board_id(db, task.column_id))
+    ensure_board_access(db, user, task_board_id(db, payload.column_id))
+    task.column_id = payload.column_id
+    task.position = payload.position
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: int, db: Db, user: CurrentUser):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task ne postoji")
+    ensure_board_access(db, user, task_board_id(db, task.column_id))
+    db.delete(task)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/files")
+def list_files(db: Db, _: CurrentUser):
+    files = db.scalars(select(StoredFile).order_by(StoredFile.created_at.desc())).all()
+    return [
+        {
+            "id": f.id,
+            "name": f.original_name,
+            "size": f.size,
+            "content_type": f.content_type,
+            "uploaded_by": f.uploaded_by.display_name,
+            "created_at": f.created_at.isoformat(),
+        }
+        for f in files
+    ]
+
+
+@app.post("/api/files")
+def upload_file(db: Db, user: CurrentUser, file: UploadFile = File(...)):
+    stored_name = f"{uuid.uuid4().hex}_{Path(file.filename or 'file').name}"
+    target = STORAGE_DIR / stored_name
+    with target.open("wb") as handle:
+        shutil.copyfileobj(file.file, handle)
+    row = StoredFile(
+        original_name=file.filename or stored_name,
+        stored_name=stored_name,
+        content_type=file.content_type or "application/octet-stream",
+        size=target.stat().st_size,
+        uploaded_by_id=user.id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "name": row.original_name}
+
+
+@app.get("/api/files/{file_id}/download")
+def download_file(file_id: int, db: Db, _: CurrentUser):
+    row = db.get(StoredFile, file_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Datoteka ne postoji")
+    path = STORAGE_DIR / row.stored_name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Datoteka nije pronađena na disku")
+    return FileResponse(path, media_type=row.content_type, filename=row.original_name)
+
+
+@app.get("/api/notifications")
+def notifications(db: Db, user: CurrentUser):
+    rows = db.scalars(select(Notification).where(Notification.user_id == user.id).order_by(Notification.created_at.desc())).all()
+    return [
+        {"id": n.id, "message": n.message, "link": n.link, "is_read": n.is_read, "created_at": n.created_at.isoformat()}
+        for n in rows
+    ]
+
+
+@app.patch("/api/notifications/{notification_id}/read")
+def mark_read(notification_id: int, db: Db, user: CurrentUser):
+    row = db.get(Notification, notification_id)
+    if not row or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Obavijest ne postoji")
+    row.is_read = True
+    db.commit()
+    return {"ok": True}

@@ -1,0 +1,61 @@
+# Local development stack (Windows/Docker Desktop).
+# Secrets come from .env - copy .env.example to .env and fill in real values.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: workspace
+      POSTGRES_USER: workspace
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set in .env}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workspace -d workspace"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg2://workspace:${DB_PASSWORD:?set in .env}@db:5432/workspace
+      JWT_SECRET: ${JWT_SECRET:?set in .env}
+      STORAGE_DIR: /data/uploads
+      NTFY_URL: http://ntfy:80
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:9999}
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      ntfy:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-9999}:80"
+    depends_on:
+      - backend
+
+  ntfy:
+    image: binwiederhier/ntfy:v2.11.0
+    restart: unless-stopped
+    command: serve
+    environment:
+      NTFY_BASE_URL: http://localhost:8081
+      NTFY_LISTEN_HTTP: :80
+    volumes:
+      - ntfy_data:/var/cache/ntfy
+    ports:
+      - "8081:80"
+
+volumes:
+  db_data:
+  uploads:
+  ntfy_data:

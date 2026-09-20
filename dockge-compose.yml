@@ -1,0 +1,68 @@
+# Dockge deployment for SolRay - builds images straight from GitHub.
+#
+# Setup (one time, on the server):
+#   1. Put this file in Dockge (stack name: solray).
+#   2. In the stack folder (/opt/stacks/solray) run:
+#        git clone https://github.com/LotDog1984/solray.git repo
+#      (or let Dockge's "git" source pull it - see Dockge docs)
+#   3. Create /opt/stacks/solray/.env with DB_PASSWORD, JWT_SECRET, CORS_ORIGINS.
+#   4. Deploy the stack in Dockge. First build takes a few minutes.
+#
+# Updating: in /opt/stacks/solray/repo run `git pull`, then redeploy in Dockge
+# (or: docker compose -f /opt/stacks/solray/dockge-compose.yml up -d --build)
+name: solray
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: workspace
+      POSTGRES_USER: workspace
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    volumes:
+      - /mnt/docker/apps/solray/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workspace -d workspace"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./repo/backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg2://workspace:${DB_PASSWORD:?set DB_PASSWORD in .env}@db:5432/workspace
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      STORAGE_DIR: /data/uploads
+      NTFY_URL: http://ntfy:80
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:9998}
+    volumes:
+      - /mnt/docker/apps/solray/data/uploads:/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      ntfy:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./repo/frontend
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-9998}:80"
+    depends_on:
+      - backend
+
+  ntfy:
+    image: binwiederhier/ntfy:v2.11.0
+    restart: unless-stopped
+    command: serve
+    environment:
+      NTFY_BASE_URL: ${NTFY_BASE_URL:-http://localhost:8082}
+      NTFY_LISTEN_HTTP: :80
+    volumes:
+      - /mnt/docker/apps/solray/data/ntfy:/var/cache/ntfy
+    ports:
+      - "8082:80"

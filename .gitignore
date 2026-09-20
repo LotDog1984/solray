@@ -1,0 +1,56 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# CPython cache directories
+.pytest_cache/
+
+# Environment variables (contains real secrets - never commit)
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Docker
+.dockerenv
+
+# Test/debug artifacts (not part of the app)
+*.png
+debug-*.js
+final-*.js
+manual-browser-test.js
+playwright-*.js
+precise-login-test.js
+simple-test.js
+backend-test.sh
+test-login-flow.html
+final-verification.js
+
+# Freebuff workspace metadata
+.freebuff/
+
+# Node (dev-only test runner deps)
+node_modules/
+package-lock.json
+package.json
+
+# Local deploy scratch files (superseded by dockge-compose.yml)
+yaml.deploy
+deploy-compose.yaml
+deploy-script.sh
+
+# Python cache
+*.egg-info/
