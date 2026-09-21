@@ -746,6 +746,10 @@ function renderKanban(board) {
         <form class="new-task-form" data-column-id="${col.id}" style="margin-top:10px;display:grid;gap:6px;">
           <input name="title" placeholder="Novi zadatak..." required />
           <textarea name="description" placeholder="Opis (@ime za tagiranje)..." style="min-height:50px;"></textarea>
+          <div class="todo-creator">
+            <div class="todo-creator-rows"></div>
+            <button type="button" class="secondary add-todo-row">+ Stavka popisa</button>
+          </div>
           <div class="row">
             <select name="assignee_id" style="flex:2;">
               <option value="">Nedodijeljeno</option>
@@ -775,18 +779,33 @@ function renderKanban(board) {
 
   // Bind new task forms
   kanban.querySelectorAll(".new-task-form").forEach((form) => {
+    // Checklist creator rows (+ Stavka popisa)
+    const rowsBox = form.querySelector(".todo-creator-rows");
+    form.querySelector(".add-todo-row").onclick = () => {
+      const row = document.createElement("div");
+      row.className = "todo-creator-row";
+      row.innerHTML = `<input name="todo_item" placeholder="Stavka popisa..." /><button type="button" class="secondary remove-todo-row" title="Ukloni">✕</button>`;
+      row.querySelector(".remove-todo-row").onclick = () => row.remove();
+      rowsBox.appendChild(row);
+      row.querySelector("input").focus();
+    };
+
     form.onsubmit = async (event) => {
       event.preventDefault();
       const payload = formData(form);
       const columnId = Number(form.dataset.columnId);
       const column = board.columns.find((c) => c.id === columnId);
+      const items = [...form.querySelectorAll(".todo-creator-row input")]
+        .map((inp, idx) => ({ title: inp.value.trim(), is_done: false, position: idx }))
+        .filter((i) => i.title);
       try {
         await api.json("/api/tasks", "POST", {
           column_id: columnId,
           title: payload.title,
           description: payload.description || "",
           assignee_id: payload.assignee_id ? Number(payload.assignee_id) : null,
-          position: column ? column.tasks.length : 0,
+          position: column ? column.tasks.filter((t) => !t.completed).length : 0,
+          items,
         });
         await loadBoard();
         refreshUnreadCount(); // a self-tag or assignment must bump the badge
@@ -839,10 +858,23 @@ function renderKanban(board) {
 
 function renderTask(task) {
   const open = state.openTaskId === task.id;
+  const items = task.items || [];
+  const done = items.filter((i) => i.is_done).length;
+  const hasItems = items.length > 0;
   return `
-  <div class="task ${task.mentions_me ? "mentions-me" : ""}" draggable="true" data-task-id="${task.id}">
-    <strong>${escapeHtml(task.title)}</strong>
+  <div class="task ${task.mentions_me ? "mentions-me" : ""} ${task.completed ? "completed" : ""}" draggable="true" data-task-id="${task.id}">
+    <div class="task-head">
+      <label class="complete-toggle" title="${hasItems ? "Završava se kad su sve stavke označene" : "Označi kao završeno"}">
+        <input type="checkbox" class="toggle-complete" data-task-id="${task.id}" ${task.completed ? "checked" : ""} ${hasItems ? "disabled" : ""} />
+      </label>
+      <strong class="task-title">${escapeHtml(task.title)}</strong>
+    </div>
     ${task.description ? `<p>${escapeHtml(task.description)}</p>` : ""}
+    ${
+      hasItems && !open
+        ? `<div class="todo-progress ${task.completed ? "all-done" : ""}">${task.completed ? "✓ " : ""}${done}/${items.length} stavki</div>`
+        : ""
+    }
     <small>${task.assignee ? `👤 ${escapeHtml(task.assignee)}` : "Nedodijeljeno"}</small>
     <div class="row">
       <button class="secondary edit-task" data-task-id="${task.id}">Uredi</button>
@@ -863,6 +895,24 @@ function renderTask(task) {
             )
             .join("")}
         </select>
+        <div class="todo-editor" data-task-id="${task.id}">
+          <div class="todo-editor-rows">
+            ${items
+              .map(
+                (i) => `
+            <div class="todo-item" data-item-id="${i.id}">
+              <input type="checkbox" class="todo-check" data-item-id="${i.id}" ${i.is_done ? "checked" : ""} />
+              <input class="todo-text" value="${escapeHtml(i.title)}" />
+              <button type="button" class="secondary todo-del" data-item-id="${i.id}" title="Obriši stavku">✕</button>
+            </div>`
+              )
+              .join("")}
+          </div>
+          <div class="row">
+            <input class="todo-new-text" placeholder="Nova stavka popisa..." />
+            <button type="button" class="secondary todo-add">Dodaj stavku</button>
+          </div>
+        </div>
         <div class="row">
           <button type="submit">Spremi</button>
           <button type="button" class="secondary cancel-edit">Odustani</button>
@@ -885,6 +935,86 @@ function bindTaskEvents(board) {
       const id = Number(btn.dataset.taskId);
       state.openTaskId = state.openTaskId === id ? null : id;
       loadBoard();
+    };
+  });
+
+  // Manual completion toggle — only for tasks without checklist items
+  document.querySelectorAll(".toggle-complete").forEach((box) => {
+    box.onchange = async () => {
+      try {
+        await api.json(`/api/tasks/${box.dataset.taskId}/completed`, "PATCH", {});
+        await loadBoard();
+      } catch (error) {
+        box.checked = !box.checked;
+        alert(error.message);
+      }
+    };
+  });
+
+  // Checklist item interactions (inside the expanded task editor)
+  document.querySelectorAll(".todo-editor").forEach((editor) => {
+    const taskId = editor.dataset.taskId;
+    const rows = editor.querySelectorAll(".todo-item");
+
+    editor.querySelectorAll(".todo-check").forEach((check) => {
+      check.onchange = async () => {
+        const row = check.closest(".todo-item");
+        try {
+          await api.json(`/api/tasks/${taskId}/items/${check.dataset.itemId}`, "PATCH", {
+            title: row.querySelector(".todo-text").value,
+            is_done: check.checked,
+          });
+          await loadBoard();
+        } catch (error) {
+          check.checked = !check.checked;
+          alert(error.message);
+        }
+      };
+    });
+
+    editor.querySelectorAll(".todo-del").forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          await api.request(`/api/tasks/${taskId}/items/${btn.dataset.itemId}`, { method: "DELETE" });
+          await loadBoard();
+        } catch (error) {
+          alert(error.message);
+        }
+      };
+    });
+
+    rows.forEach((row) => {
+      row.querySelector(".todo-text").onchange = async () => {
+        try {
+          await api.json(`/api/tasks/${taskId}/items/${row.dataset.itemId}`, "PATCH", {
+            title: row.querySelector(".todo-text").value,
+            is_done: row.querySelector(".todo-check").checked,
+          });
+          await loadBoard();
+        } catch (error) {
+          alert(error.message);
+        }
+      };
+    });
+
+    const addBtn = editor.querySelector(".todo-add");
+    const addInput = editor.querySelector(".todo-new-text");
+    const addItem = async () => {
+      const title = addInput.value.trim();
+      if (!title) return;
+      try {
+        await api.json(`/api/tasks/${taskId}/items`, "POST", { title, is_done: false });
+        await loadBoard();
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+    addBtn.onclick = addItem;
+    addInput.onkeydown = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addItem();
+      }
     };
   });
   document.querySelectorAll(".delete-task").forEach((btn) => {

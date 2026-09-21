@@ -110,9 +110,22 @@ class Task(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     assignee_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     position: Mapped[int] = mapped_column(Integer, default=0)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     assignee: Mapped[User | None] = relationship(foreign_keys=[assignee_id])
+    items: Mapped[list["TaskItem"]] = relationship(cascade="all, delete-orphan", order_by="TaskItem.position")
+
+
+class TaskItem(Base):
+    __tablename__ = "task_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(255))
+    is_done: Mapped[bool] = mapped_column(Boolean, default=False)
+    position: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class StoredFile(Base):
@@ -196,12 +209,21 @@ class ColumnIn(BaseModel):
     position: int = 0
 
 
+class TaskItemIn(BaseModel):
+    id: int | None = None
+    title: str
+    is_done: bool = False
+    position: int = 0
+
+
 class TaskIn(BaseModel):
     column_id: int
     title: str
     description: str = ""
     assignee_id: int | None = None
     position: int = 0
+    completed: bool | None = None
+    items: list[TaskItemIn] | None = None  # None = don't touch checklist; list = replace it
 
 
 class TaskMoveIn(BaseModel):
@@ -347,6 +369,9 @@ def startup() -> None:
     # databases created before projects were introduced.
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE boards ADD COLUMN IF NOT EXISTS project_id INTEGER"))
+        # 1.3.0: task completion + checklist items
+        conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ NULL"))
     # Backfill: put every existing board into a default project so nothing is lost.
     db = SessionLocal()
     try:
@@ -730,16 +755,8 @@ def get_board(board_id: int, db: Db, user: CurrentUser):
                 "name": col.name,
                 "position": col.position,
                 "tasks": [
-                    {
-                        "id": task.id,
-                        "title": task.title,
-                        "description": task.description,
-                        "assignee_id": task.assignee_id,
-                        "assignee": task.assignee.display_name if task.assignee else None,
-                        "position": task.position,
-                        "mentions_me": user_mentioned_in_task(task, user),
-                    }
-                    for task in col.tasks
+                    {**serialize_task(task), "mentions_me": user_mentioned_in_task(task, user)}
+                    for task in sorted_tasks(col.tasks)
                 ],
             }
             for col in board.columns
@@ -791,6 +808,41 @@ def create_column(payload: ColumnIn, db: Db, user: CurrentUser):
     return {"id": column.id, "name": column.name, "position": column.position}
 
 
+def serialize_task(task: Task) -> dict:
+    items = sorted(task.items, key=lambda i: i.position)
+    return {
+        "id": task.id,
+        "title": task.title,
+        "description": task.description,
+        "assignee_id": task.assignee_id,
+        "assignee": task.assignee.display_name if task.assignee else None,
+        "position": task.position,
+        "completed": task.completed,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "items": [
+            {"id": i.id, "title": i.title, "is_done": i.is_done, "position": i.position}
+            for i in items
+        ],
+    }
+
+
+def recompute_task_completion(db: Session, task: Task) -> None:
+    """A task with checklist items is completed iff ALL items are done.
+    A manual toggle is only allowed for tasks without items."""
+    if task.items:
+        task.completed = all(i.is_done for i in task.items)
+    task.completed_at = datetime.now(timezone.utc) if task.completed else None
+
+
+def sorted_tasks(tasks: list[Task]) -> list[Task]:
+    """Open tasks first (by position), completed ones at the bottom (newest completion first)."""
+    return sorted(
+        tasks,
+        key=lambda t: (1 if t.completed else 0, t.completed_at or t.created_at, t.position),
+        reverse=False,
+    )
+
+
 @app.post("/api/tasks")
 def create_task(payload: TaskIn, db: Db, user: CurrentUser):
     board_id = task_board_id(db, payload.column_id)
@@ -804,7 +856,12 @@ def create_task(payload: TaskIn, db: Db, user: CurrentUser):
         created_by_id=user.id,
     )
     db.add(task)
+    db.flush()  # assigns task.id — items need it
+    for idx, item in enumerate(payload.items or []):
+        if item.title.strip():
+            db.add(TaskItem(task_id=task.id, title=item.title.strip()[:255], is_done=item.is_done, position=idx))
     db.flush()
+    recompute_task_completion(db, task)
     notify_task_users(db, user, task)
     db.commit()
     db.refresh(task)
@@ -822,9 +879,101 @@ def update_task(task_id: int, payload: TaskIn, db: Db, user: CurrentUser):
     task.description = payload.description
     task.assignee_id = payload.assignee_id
     task.position = payload.position
+    # Checklist editor may replace items wholesale (matched by id when present).
+    if payload.items is not None:
+        existing = {i.id: i for i in task.items}
+        incoming_ids = {item.id for item in payload.items if item.id}
+        for idx, item in enumerate(payload.items):
+            title = item.title.strip()
+            if not title:
+                continue
+            if item.id and item.id in existing:
+                row = existing[item.id]
+                row.title = title
+                row.is_done = item.is_done
+                row.position = idx
+            else:
+                db.add(TaskItem(task_id=task.id, title=title[:255], is_done=item.is_done, position=idx))
+        for row_id, row in existing.items():
+            if row_id not in incoming_ids:
+                db.delete(row)
+    if payload.completed is not None and not task.items:
+        task.completed = payload.completed
+    recompute_task_completion(db, task)
     notify_task_users(db, user, task)
     db.commit()
     return {"ok": True}
+
+
+@app.patch("/api/tasks/{task_id}/completed")
+def toggle_completed(task_id: int, db: Db, user: CurrentUser):
+    """Manual completion toggle — allowed only for tasks WITHOUT checklist items.
+    Tasks with items complete themselves when every item is checked."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task ne postoji")
+    ensure_board_access(db, user, task_board_id(db, task.column_id))
+    if task.items:
+        raise HTTPException(status_code=400, detail="Zadatak sa popisom završava se kad su sve stavke označene")
+    task.completed = not task.completed
+    task.completed_at = datetime.now(timezone.utc) if task.completed else None
+    db.commit()
+    return {"ok": True, "completed": task.completed}
+
+
+@app.post("/api/tasks/{task_id}/items")
+def add_task_item(task_id: int, payload: TaskItemIn, db: Db, user: CurrentUser):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task ne postoji")
+    ensure_board_access(db, user, task_board_id(db, task.column_id))
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Stavka ne smije biti prazna")
+    position = payload.position if payload.position is not None else len(task.items)
+    item = TaskItem(task_id=task.id, title=title[:255], is_done=False, position=position)
+    db.add(item)
+    db.flush()
+    was_completed = task.completed
+    recompute_task_completion(db, task)
+    db.commit()
+    return {"id": item.id, "completed_changed": task.completed != was_completed}
+
+
+@app.patch("/api/tasks/{task_id}/items/{item_id}")
+def update_task_item(task_id: int, item_id: int, payload: TaskItemIn, db: Db, user: CurrentUser):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task ne postoji")
+    ensure_board_access(db, user, task_board_id(db, task.column_id))
+    item = db.get(TaskItem, item_id)
+    if not item or item.task_id != task.id:
+        raise HTTPException(status_code=404, detail="Stavka ne postoji")
+    was_completed = task.completed
+    if payload.title.strip():
+        item.title = payload.title.strip()[:255]
+    item.is_done = payload.is_done
+    if payload.position is not None:
+        item.position = payload.position
+    recompute_task_completion(db, task)
+    db.commit()
+    return {"ok": True, "completed": task.completed, "completed_changed": task.completed != was_completed}
+
+
+@app.delete("/api/tasks/{task_id}/items/{item_id}")
+def delete_task_item(task_id: int, item_id: int, db: Db, user: CurrentUser):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task ne postoji")
+    ensure_board_access(db, user, task_board_id(db, task.column_id))
+    item = db.get(TaskItem, item_id)
+    if not item or item.task_id != task.id:
+        raise HTTPException(status_code=404, detail="Stavka ne postoji")
+    db.delete(item)
+    was_completed = task.completed
+    recompute_task_completion(db, task)
+    db.commit()
+    return {"ok": True, "completed": task.completed, "completed_changed": task.completed != was_completed}
 
 
 @app.patch("/api/tasks/{task_id}/move")
