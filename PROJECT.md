@@ -15,7 +15,8 @@ and the commit sha. Server stacks pin an exact version (see dockge-compose.yml).
 
 | Version | What changed |
 |---------|--------------|
-| 1.1.4 | Fix: desktop layout collapsed to the stacked/phone layout in preview panes and other windows under 820px wide (right pane appeared "lost"); responsive breakpoint lowered to 640px. |
+| 1.1.5 | Reverted 1.1.4: restored the original 820px responsive breakpoint after the user preferred the original full-page look. **Do not change the breakpoint again** — the stacked layout in narrow windows (incl. the Freebuff preview pane) is intended behavior. |
+| 1.1.4 | (REVERTED in 1.1.5) Desktop layout collapsed to the stacked/phone layout in preview panes and other windows under 820px wide; breakpoint was lowered to 640px. |
 | 1.1.3 | Version badge moved to the top-left corner beside the app name (small chip `vX.Y.Z`, per mockup). |
 | 1.1.2 | Version badge in the sidebar (`vX.Y.Z` under the logged-in name): the frontend image bakes `VERSION` in at build time, nginx serves it at `/version.txt` (no-cache), and the sidebar fetches it fresh on every render — making server/browser staleness instantly visible. Workflow syncs the root VERSION into the frontend build context on every build. |
 | 1.1.1 | Fix: Postavke button (left bar) opened the Files page instead of settings — a regression from the 1.1.0 tab cleanup; settings view is its own branch again. |
