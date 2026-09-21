@@ -52,7 +52,18 @@ The backend builds its DATABASE_URL from POSTGRES_PASSWORD when DATABASE_URL is 
 (see top of `backend/app.py`) — that's why a single secret line covers db + backend.
 
 Data lives in `/mnt/docker/apps/solray/data/{postgres,uploads,ntfy}`.
-Update after pushing new code = hit Update/Redeploy in Dockge.
+
+**Server update flow (learned the hard way):** editing the YAML + stop/start does NOT
+change what runs — stopped containers just restart with the same old image, and
+compose never re-checks the registry on its own. After bumping the image tags in
+Dockge, run in the stack's terminal:
+
+    docker compose pull                      # fetch the new images
+    docker compose up -d --force-recreate    # recreate containers from current YAML
+    docker compose images                    # verify tags are the new version
+
+Then Ctrl+F5 in the browser once (old tab may hold stale JS). No stopping needed —
+force-recreate swaps containers with a few seconds of downtime.
 
 **Pull access:** the GHCR packages inherit the repo's visibility. If the repo is
 private, the server needs a docker login (PAT with read:packages) before deploying;
