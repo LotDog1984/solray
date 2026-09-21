@@ -304,6 +304,17 @@ def send_ntfy(user: User, title: str, message: str) -> None:
         pass
 
 
+def user_mentioned_in_task(task: Task, user: User) -> bool:
+    """True if this user is tagged in the task (@username in title/description
+    or directly assigned). Used to highlight the task in that user's view."""
+    if user.id and task.assignee_id == user.id:
+        return True
+    if not user.username:
+        return False
+    pattern = re.compile(rf"@{re.escape(user.username)}\b", re.IGNORECASE)
+    return bool(pattern.search(f"{task.title or ''} {task.description or ''}"))
+
+
 def notify_mentions(db: Session, actor: User, task: Task) -> None:
     usernames = set(re.findall(r"@([A-Za-z0-9_.-]{2,40})", f"{task.title} {task.description}"))
     if not usernames:
@@ -747,6 +758,7 @@ def get_board(board_id: int, db: Db, user: CurrentUser):
                         "assignee_id": task.assignee_id,
                         "assignee": task.assignee.display_name if task.assignee else None,
                         "position": task.position,
+                        "mentions_me": user_mentioned_in_task(task, user),
                     }
                     for task in col.tasks
                 ],

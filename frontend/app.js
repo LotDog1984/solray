@@ -299,7 +299,8 @@ function renderSidebar() {
       <form id="newProjectForm" class="side-form">
         <input name="name" placeholder="Novi projekt..." required />
         <button type="submit" title="Dodaj projekt">+</button>
-      </form>`;
+      </form>
+      <button class="secondary ${state.view === "notifications" ? "active" : ""}" id="navNotifications">Obavijesti</button>`;
   } else {
     const project = currentProject();
     const rows = (project?.boards || [])
@@ -412,6 +413,19 @@ function bindSidebarEvents(sidebar) {
     afterChange: refreshProjects,
   });
 
+  const notificationsBtn = sidebar.querySelector("#navNotifications");
+  if (notificationsBtn) {
+    notificationsBtn.onclick = () => {
+      state.layer = "projects";
+      state.project = null;
+      state.board = null;
+      state.view = "notifications";
+      state.searchResults = null;
+      renderSidebar();
+      renderView();
+    };
+  }
+
   const settingsBtn = sidebar.querySelector("#navSettings");
   if (settingsBtn) {
     settingsBtn.onclick = () => {
@@ -500,18 +514,19 @@ function renderView() {
   if (state.layer !== "app") {
     content.innerHTML = renderSearchArea();
     bindSearch(content);
+    if (!state.searchQuery) renderNotifications(); // Obavijesti live on the main page
     return;
   }
 
   const heading = board?.name || state.appName || "Private Workspace";
+  // Board tabs: only Ploča and Datoteke (Postavke lives in the left bar,
+  // Obavijesti on the main page).
   const tabs = `
     <div class="topbar">
       <h1>${escapeHtml(heading)}</h1>
       <div class="tabs">
         <button class="${state.view === "kanban" ? "active" : ""}" data-view="kanban">Ploča</button>
         <button class="${state.view === "files" ? "active" : ""}" data-view="files">Datoteke</button>
-        <button class="${state.view === "notifications" ? "active" : ""}" data-view="notifications">Obavijesti</button>
-        <button class="${state.view === "settings" ? "active" : ""}" data-view="settings">Postavke</button>
       </div>
     </div>
   `;
@@ -520,18 +535,10 @@ function renderView() {
     content.innerHTML = tabs + '<div class="kanban" id="kanban">Učitavanje...</div>';
     bindTabs(content);
     loadBoard();
-  } else if (state.view === "files") {
+  } else {
     content.innerHTML = tabs + '<div id="filesView"></div>';
     bindTabs(content);
     renderFiles();
-  } else if (state.view === "notifications") {
-    content.innerHTML = tabs + '<div id="notificationsView"></div>';
-    bindTabs(content);
-    renderNotifications();
-  } else {
-    content.innerHTML = tabs + '<div id="settingsView"></div>';
-    bindTabs(content);
-    renderSettings();
   }
 }
 
@@ -568,6 +575,7 @@ function renderSearchArea() {
         ${state.searchResults !== null ? '<button type="button" class="secondary" id="searchClear">Očisti</button>' : ""}
       </form>
       ${resultsHtml}
+      <div id="notificationsView"></div>
     </div>`;
 }
 
@@ -794,7 +802,7 @@ function renderKanban(board) {
 function renderTask(task) {
   const open = state.openTaskId === task.id;
   return `
-  <div class="task" draggable="true" data-task-id="${task.id}">
+  <div class="task ${task.mentions_me ? "mentions-me" : ""}" draggable="true" data-task-id="${task.id}">
     <strong>${escapeHtml(task.title)}</strong>
     ${task.description ? `<p>${escapeHtml(task.description)}</p>` : ""}
     <small>${task.assignee ? `👤 ${escapeHtml(task.assignee)}` : "Nedodijeljeno"}</small>
