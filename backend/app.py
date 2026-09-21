@@ -269,14 +269,10 @@ CurrentUser = Annotated[User, Depends(current_user)]
 
 
 def ensure_board_access(db: Session, user: User, board_id: int) -> Board:
+    """Shared workspace: every logged-in user can open and work with every board."""
     board = db.get(Board, board_id)
     if not board:
         raise HTTPException(status_code=404, detail="Ploča ne postoji")
-    if board.owner_id == user.id:
-        return board
-    member = db.scalar(select(BoardMember).where(BoardMember.board_id == board_id, BoardMember.user_id == user.id))
-    if not member:
-        raise HTTPException(status_code=403, detail="Nemate pristup ovoj ploči")
     return board
 
 
@@ -548,24 +544,17 @@ def delete_user(user_id: int, db: Db, user: CurrentUser):
 
 
 def ensure_project_manage(db: Session, user: User, project: Project) -> None:
-    if project.owner_id != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Nemate dozvolu za upravljanje projektom")
+    """Shared workspace: any user may manage any project (rename/delete/move boards)."""
+    return None
 
 
 @app.get("/api/projects")
 def list_projects(db: Db, user: CurrentUser):
-    board_rows = db.execute(
-        select(Board)
-        .outerjoin(BoardMember, BoardMember.board_id == Board.id)
-        .where((Board.owner_id == user.id) | (BoardMember.user_id == user.id))
-        .order_by(Board.created_at)
-    ).scalars().unique().all()
-    visible_projects = {b.project_id for b in board_rows}
+    """Shared workspace: all projects and all boards are visible to every user."""
+    board_rows = db.scalars(select(Board).order_by(Board.created_at)).all()
     projects = db.scalars(select(Project).order_by(Project.created_at)).all()
     out = []
     for project in projects:
-        if project.owner_id != user.id and project.id not in visible_projects and not user.is_admin:
-            continue
         boards = [
             {"id": b.id, "name": b.name, "project_id": b.project_id}
             for b in board_rows
@@ -616,9 +605,9 @@ def create_board(payload: BoardIn, db: Db, user: CurrentUser):
             raise HTTPException(status_code=404, detail="Projekt ne postoji")
         ensure_project_manage(db, user, project)
     else:
-        project = db.scalar(
-            select(Project).where(Project.owner_id == user.id).order_by(Project.created_at)
-        )
+        # Shared workspace: a board without an explicit project goes into the
+        # first existing project — never into a per-user "Glavni projekt".
+        project = db.scalar(select(Project).order_by(Project.created_at))
         if not project:
             project = Project(name="Glavni projekt", owner_id=user.id)
             db.add(project)
@@ -636,12 +625,8 @@ def create_board(payload: BoardIn, db: Db, user: CurrentUser):
 
 @app.get("/api/boards")
 def list_boards(db: Db, user: CurrentUser):
-    rows = db.execute(
-        select(Board)
-        .outerjoin(BoardMember, BoardMember.board_id == Board.id)
-        .where((Board.owner_id == user.id) | (BoardMember.user_id == user.id))
-        .order_by(Board.created_at.desc())
-    ).scalars().unique().all()
+    """Shared workspace: every user sees every board."""
+    rows = db.scalars(select(Board).order_by(Board.created_at.desc())).all()
     return [{"id": b.id, "name": b.name, "owner_id": b.owner_id, "project_id": b.project_id} for b in rows]
 
 
@@ -653,40 +638,14 @@ def search_everything(db: Db, user: CurrentUser, q: str = ""):
     like = f"%{query}%"
     lowered = query.lower()
 
-    # Boards the user may see (owner, member, or admin) — same rule as list_boards.
-    if user.is_admin:
-        board_rows = db.scalars(select(Board)).all()
-    else:
-        board_rows = (
-            db.execute(
-                select(Board)
-                .outerjoin(BoardMember, BoardMember.board_id == Board.id)
-                .where((Board.owner_id == user.id) | (BoardMember.user_id == user.id))
-            )
-            .scalars()
-            .unique()
-            .all()
-        )
-
-    project_ids = {b.project_id for b in board_rows if b.project_id}
-    if not user.is_admin:
-        project_ids.update(
-            db.scalars(select(Project.id).where(Project.owner_id == user.id)).all()
-        )
-    projects = (
-        db.scalars(select(Project)).all()
-        if user.is_admin
-        else (
-            db.scalars(select(Project).where(Project.id.in_(project_ids))).all()
-            if project_ids
-            else []
-        )
-    )
+    # Shared workspace: search across everything — same visibility for all users.
+    board_rows = db.scalars(select(Board)).all()
+    projects = db.scalars(select(Project)).all()
     project_map = {p.id: p for p in projects}
 
     results = []
 
-    # 1) Projects (only ones the user owns or that contain visible boards)
+    # 1) Projects
     for project in projects:
         if lowered in project.name.lower():
             results.append(
@@ -793,8 +752,6 @@ def update_board(board_id: int, payload: BoardIn, db: Db, user: CurrentUser):
     board = db.get(Board, board_id)
     if not board:
         raise HTTPException(status_code=404, detail="Ploča ne postoji")
-    if board.owner_id != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Nemate dozvolu za uređivanje ploče")
     board.name = payload.name.strip() or board.name
     if payload.project_id is not None and payload.project_id != board.project_id:
         project = db.get(Project, payload.project_id)
@@ -811,8 +768,6 @@ def delete_board(board_id: int, db: Db, user: CurrentUser):
     board = db.get(Board, board_id)
     if not board:
         raise HTTPException(status_code=404, detail="Ploča ne postoji")
-    if board.owner_id != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Nemate dozvolu za brisanje ploče")
     db.delete(board)
     db.commit()
     return {"ok": True}
@@ -820,18 +775,9 @@ def delete_board(board_id: int, db: Db, user: CurrentUser):
 
 @app.post("/api/boards/{board_id}/members")
 def add_member(board_id: int, db: Db, user: CurrentUser, username: Annotated[str, Form(...)]):
-    board = ensure_board_access(db, user, board_id)
-    if board.owner_id != user.id:
-        raise HTTPException(status_code=403, detail="Samo vlasnik može dodavati članove")
-    member = db.scalar(select(User).where(User.username == username.strip().lower()))
-    if not member:
-        raise HTTPException(status_code=404, detail="Korisnik ne postoji")
-    if member.id == board.owner_id:
-        return {"ok": True}
-    exists = db.scalar(select(BoardMember).where(BoardMember.board_id == board_id, BoardMember.user_id == member.id))
-    if not exists:
-        db.add(BoardMember(board_id=board_id, user_id=member.id))
-        db.commit()
+    """Membership is a no-op in the shared workspace — every user already has
+    full access to every board. Kept for API compatibility."""
+    ensure_board_access(db, user, board_id)
     return {"ok": True}
 
 

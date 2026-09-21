@@ -15,6 +15,7 @@ and the commit sha. Server stacks pin an exact version (see dockge-compose.yml).
 
 | Version | What changed |
 |---------|--------------|
+| 1.2.1 | **CRITICAL FIX — shared workspace:** every logged-in user now sees ALL projects, boards, and tasks and can work with them (create/edit/move/delete). Previously everything was filtered by owner/membership, so new users saw an empty app. Admin-only remains: user management (create/delete users), app settings (name, default columns, Postavke sections are hidden in the UI for non-admins). `ensure_board_access` / `ensure_project_manage` no longer restrict by owner; `/api/projects`, `/api/boards`, and search return everything; boards created without a project go into the first project instead of a per-user "Glavni projekt"; board-members endpoint kept as a no-op. |
 | 1.2.0 | Notifications feature pack: tagging yourself or being assigned a task now creates a notification (self-notify no longer excluded); **Obavijesti badge** with unread count (orange, phone-style, refreshed on load/save/30s poll + after marking read); clicking a notification opens the task's board and marks it read; "Označi sve kao pročitano"; new API: `/api/notifications/unread-count`, `/api/notifications/read-all`, `/api/me/ntfy/test`; Settings ntfy panel got a **Testiraj** button returning the exact failure reason. ntfy topic note: any topic string works; phone app must subscribe to the identical topic on the same ntfy server URL. |
 | 1.1.7 | Refined 1.1.6: narrow windows now get the **same desktop layout, scaled** — sidebar is fluid (`clamp(200px, 28vw, 260px)`), paddings/columns keep normal sizes, kanban min-column lowered to 190px so 2–3 columns fit at any width. Phone stacking only ≤480px. (1.1.6's separate compact look with 170px sidebar was too cramped — user wants the image-1 desktop look at every width.) |
 | 1.1.6 | (Refined by 1.1.7) Narrow windows kept two-pane layout with a compact 170px sidebar tier. |
@@ -137,6 +138,12 @@ locally only, gitignored, and can be deleted once the server is on the image flo
   `preview_logs` for console errors.
 - NEVER test destructive calls (delete) against real data — use throwaway objects.
   (One board was accidentally deleted this way once; don't repeat it.)
+- **2026-09-21 incident (do not repeat):** during v1.2.1 testing a real user
+  account (`ruta`, id 9) was deleted — the temp-user cleanup guessed the id
+  instead of looking it up first. Nothing else was lost (no boards/projects/
+  tasks referenced that user), but the account and its password were. RULE:
+  before ANY delete-by-id, SELECT the row and verify its identity; never
+  guess ids; always clean up by username, not id.
 - Users table column names: `password_hash`, `ntfy_topic`, `is_admin`.
 
 ## Git / GitHub
