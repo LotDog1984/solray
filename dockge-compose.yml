@@ -9,15 +9,23 @@
 #    4. Hit  Deploy.  Images are pulled from GitHub's container registry
 #       automatically — nothing is cloned or built on the server.
 #
-#  UPDATING LATER: after a new version is pushed to
-#  https://github.com/LotDog1984/solray  just hit  Update  in Dockge —
-#  it pulls the new images and recreates the app containers.
+#  UPDATING LATER: every code change is released as a new version (the
+#  version lives in the repo's VERSION file, and new images are pushed to
+#  GitHub's registry automatically on every release). To update the app:
+#    1. check https://github.com/LotDog1984/solray (VERSION file) for the
+#       newest version number
+#    2. change the version in the two  image: ghcr.io/...  lines below
+#    3. hit  Update  in Dockge
+#  (Alternatively use tag :latest to always get the newest build.)
 #
 #  Data (database, uploaded files, notifications) is stored under
 #  /mnt/docker/apps/solray/data/ and survives updates and restarts.
 #
 #  First run: open the app URL and register — the first account becomes
 #  the admin and registration closes automatically afterwards.
+#
+#  VERSION HISTORY: see PROJECT.md in the repo (version log section).
+#  Deployed version below = 1.0.0 (base release).
 # =============================================================================
 
 name: solray
@@ -48,7 +56,7 @@ services:
       retries: 5
 
   backend:
-    image: ghcr.io/lotdog1984/solray-backend:latest
+    image: ghcr.io/lotdog1984/solray-backend:1.0.0      # <<< bump version when updating
     restart: unless-stopped
     environment:
       <<: *app-env
@@ -65,7 +73,7 @@ services:
         condition: service_started
 
   frontend:
-    image: ghcr.io/lotdog1984/solray-frontend:latest
+    image: ghcr.io/lotdog1984/solray-frontend:1.0.0     # <<< bump version when updating
     restart: unless-stopped
     ports:
       - "9998:80"          # <<< EDIT (5) host port for the app (left side)

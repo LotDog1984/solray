@@ -3,6 +3,20 @@
 Kanban app (projects → boards → tasks) built for Branko. All UI text is in **Croatian**.
 App name is configurable in-app (default "Private Workspace", currently set to **"SolRay"**).
 
+## Versioning (IMPORTANT)
+
+**`VERSION` file at the repo root holds the current version (semver). `1.0.0` is the
+base release.** Every user-facing change going forward is a NEW VERSION: bump the
+number in `VERSION` in the same commit/push as the change, and add a line to the
+version log below. The Actions workflow tags images with that version, `latest`,
+and the commit sha. Server stacks pin an exact version (see dockge-compose.yml).
+
+### Version log
+
+| Version | What changed |
+|---------|--------------|
+| 1.0.0 | Base version: layered sidebar navigation (projects → boards → kanban), global search with click-through, app name + default columns settings, files, @mention push notifications via ntfy, user management. Deploy = paste dockge-compose.yml into Dockge, edit x-app-env, Deploy. |
+
 ## Stack
 
 | Layer    | Tech |
@@ -26,7 +40,8 @@ After code changes only: `docker compose up -d --build backend frontend`.
 
 Images are built automatically by GitHub Actions (`.github/workflows/docker-publish.yml`)
 on every push to `main` and published to GHCR as
-`ghcr.io/lotdog1984/solray-backend:latest` / `ghcr.io/lotdog1984/solray-frontend:latest`.
+`ghcr.io/lotdog1984/solray-backend:<VERSION>` (+ `latest`, + commit sha). The version
+comes from the repo's `VERSION` file — **bump it with every change**.
 
 Deploy = paste `dockge-compose.yml` into a Dockge stack named `solray`, edit the
 `x-app-env` block at the top (POSTGRES_PASSWORD, JWT_SECRET, CORS_ORIGINS, NTFY_BASE_URL)
