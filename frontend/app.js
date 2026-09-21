@@ -332,6 +332,7 @@ function renderSidebar() {
   sidebar.innerHTML = `
     <div class="brand">${escapeHtml(state.appName || "Private Workspace")}</div>
     <div style="color:#94a3b8;font-size:13px;">Prijavljen: ${escapeHtml(state.me?.display_name || state.me?.username || "")}</div>
+    <div id="versionBadge" style="color:#8b9bb4;font-size:11px;letter-spacing:0.04em;"></div>
     <div class="side-layer">${layerHtml}</div>
     <div style="display:grid;gap:8px;">
       <button class="secondary" id="navSettings">Postavke</button>
@@ -342,6 +343,18 @@ function renderSidebar() {
 }
 
 function bindSidebarEvents(sidebar) {
+  // Version badge: what the SERVER actually serves right now. Cached copies
+  // of app.js (or an old tab) can lie about the code they run, but this fetch
+  // is fresh every render — if it disagrees with the expected version, the
+  // browser is holding a stale page (Ctrl+F5) or the URL points elsewhere.
+  fetch("/version.txt", { cache: "no-store" })
+    .then((r) => (r.ok ? r.text() : null))
+    .then((v) => {
+      const el = document.querySelector("#versionBadge");
+      if (el && v) el.textContent = `verzija ${v.trim()}`;
+    })
+    .catch(() => {});
+
   sidebar.querySelectorAll("[data-open-project]").forEach((btn) => {
     btn.onclick = () => goBoards(Number(btn.dataset.openProject));
   });

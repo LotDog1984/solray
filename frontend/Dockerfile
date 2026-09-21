@@ -1,5 +1,10 @@
 FROM nginx:alpine
 
+# Version of the app, baked in at build time and shown in the sidebar
+# (frontend reads /version.txt with cache: no-store, so it always reflects
+# what the server is actually serving).
+COPY VERSION /usr/share/nginx/html/version.txt
+
 # Copy the nginx configuration file
 COPY nginx.conf /etc/nginx/nginx.conf
 

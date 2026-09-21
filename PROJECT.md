@@ -15,6 +15,7 @@ and the commit sha. Server stacks pin an exact version (see dockge-compose.yml).
 
 | Version | What changed |
 |---------|--------------|
+| 1.1.2 | Version badge in the sidebar (`vX.Y.Z` under the logged-in name): the frontend image bakes `VERSION` in at build time, nginx serves it at `/version.txt` (no-cache), and the sidebar fetches it fresh on every render — making server/browser staleness instantly visible. Workflow syncs the root VERSION into the frontend build context on every build. |
 | 1.1.1 | Fix: Postavke button (left bar) opened the Files page instead of settings — a regression from the 1.1.0 tab cleanup; settings view is its own branch again. |
 | 1.1.0 | UI overhaul: dark-blue sidebar / light-blue content / pink-purple buttons / white text; tasks where the current user is tagged (@username in text or assignee) render ORANGE (`mentions_me` flag from backend, `.task.mentions-me`); Postavke tab removed from board topbar (settings button stays in the left bar); Obavijesti moved to the main page (below search, projects layer only); board topbar now has only Ploča and Datoteke. |
 | 1.0.0 | Base version: layered sidebar navigation (projects → boards → kanban), global search with click-through, app name + default columns settings, files, @mention push notifications via ntfy, user management. Deploy = paste dockge-compose.yml into Dockge, edit x-app-env, Deploy. |
