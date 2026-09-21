@@ -1,25 +1,44 @@
-# Dockge deployment for SolRay - builds images straight from GitHub.
+# =============================================================================
+#  SolRay — Dockge stack (paste-and-deploy)
+# =============================================================================
+#  HOW TO DEPLOY (in the Dockge web UI):
+#    1. Create a new stack named "solray".
+#    2. Paste THIS ENTIRE FILE into the compose editor.
+#    3. EDIT the lines marked  <<< EDIT  — the secrets/settings block right
+#       below this header, plus the app port in the frontend section.
+#    4. Hit  Deploy.  Images are pulled from GitHub's container registry
+#       automatically — nothing is cloned or built on the server.
 #
-# Setup (one time, on the server):
-#   1. Put this file in Dockge (stack name: solray).
-#   2. In the stack folder (/opt/stacks/solray) run:
-#        git clone https://github.com/LotDog1984/solray.git repo
-#      (or let Dockge's "git" source pull it - see Dockge docs)
-#   3. Create /opt/stacks/solray/.env with DB_PASSWORD, JWT_SECRET, CORS_ORIGINS.
-#   4. Deploy the stack in Dockge. First build takes a few minutes.
+#  UPDATING LATER: after a new version is pushed to
+#  https://github.com/LotDog1984/solray  just hit  Update  in Dockge —
+#  it pulls the new images and recreates the app containers.
 #
-# Updating: in /opt/stacks/solray/repo run `git pull`, then redeploy in Dockge
-# (or: docker compose -f /opt/stacks/solray/dockge-compose.yml up -d --build)
+#  Data (database, uploaded files, notifications) is stored under
+#  /mnt/docker/apps/solray/data/ and survives updates and restarts.
+#
+#  First run: open the app URL and register — the first account becomes
+#  the admin and registration closes automatically afterwards.
+# =============================================================================
+
 name: solray
+
+# ---- EDIT YOUR SECRETS / SETTINGS HERE --------------------------------------
+x-app-env: &app-env
+  POSTGRES_PASSWORD: change-this-to-a-long-random-password  # <<< EDIT (1) database password (any long random string)
+  JWT_SECRET: change-this-to-a-longer-random-secret         # <<< EDIT (2) login-token signing secret (long random string)
+  CORS_ORIGINS: http://192.168.1.50:9998                    # <<< EDIT (3) the EXACT URL you open the app in the browser (http://IP-or-domain:PORT)
+  NTFY_BASE_URL: http://192.168.1.50:8082                   # <<< EDIT (4) same host as (3), port 8082 (phone notifications)
+# ------------------------------------------------------------------------------
 
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
+      <<: *app-env
       POSTGRES_DB: workspace
       POSTGRES_USER: workspace
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      # POSTGRES_PASSWORD arrives from the x-app-env block above
     volumes:
       - /mnt/docker/apps/solray/data/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -29,15 +48,14 @@ services:
       retries: 5
 
   backend:
-    build:
-      context: ./repo/backend
+    image: ghcr.io/lotdog1984/solray-backend:latest
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+psycopg2://workspace:${DB_PASSWORD:?set DB_PASSWORD in .env}@db:5432/workspace
-      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      <<: *app-env
+      # POSTGRES_PASSWORD above alone is enough — the app builds its
+      # database connection string from it automatically.
       STORAGE_DIR: /data/uploads
       NTFY_URL: http://ntfy:80
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:9998}
     volumes:
       - /mnt/docker/apps/solray/data/uploads:/data/uploads
     depends_on:
@@ -47,11 +65,10 @@ services:
         condition: service_started
 
   frontend:
-    build:
-      context: ./repo/frontend
+    image: ghcr.io/lotdog1984/solray-frontend:latest
     restart: unless-stopped
     ports:
-      - "${APP_PORT:-9998}:80"
+      - "9998:80"          # <<< EDIT (5) host port for the app (left side)
     depends_on:
       - backend
 
@@ -60,9 +77,9 @@ services:
     restart: unless-stopped
     command: serve
     environment:
-      NTFY_BASE_URL: ${NTFY_BASE_URL:-http://localhost:8082}
+      <<: *app-env
       NTFY_LISTEN_HTTP: :80
     volumes:
       - /mnt/docker/apps/solray/data/ntfy:/var/cache/ntfy
     ports:
-      - "8082:80"
+      - "8082:80"          # phone-notification port (rarely needs changing)

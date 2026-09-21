@@ -22,13 +22,27 @@ docker compose up -d --build        # secrets come from .env (gitignored)
 `.env` holds DB_PASSWORD / JWT_SECRET / CORS_ORIGINS / APP_PORT. `.env.example` is the template.
 After code changes only: `docker compose up -d --build backend frontend`.
 
-## Deploying to the server with Dockge
+## Deploying to the server with Dockge (pulls prebuilt images)
 
-`dockge-compose.yml` at repo root is the server stack. It builds from the GitHub repo:
-clone the repo into `/opt/stacks/solray/repo`, put secrets in `/opt/stacks/solray/.env`
-(same variables as `.env.example`, APP_PORT default 9998), then deploy in Dockge.
+Images are built automatically by GitHub Actions (`.github/workflows/docker-publish.yml`)
+on every push to `main` and published to GHCR as
+`ghcr.io/lotdog1984/solray-backend:latest` / `ghcr.io/lotdog1984/solray-frontend:latest`.
+
+Deploy = paste `dockge-compose.yml` into a Dockge stack named `solray`, edit the
+`x-app-env` block at the top (POSTGRES_PASSWORD, JWT_SECRET, CORS_ORIGINS, NTFY_BASE_URL)
+and the frontend port, hit Deploy. No clone, no build, no .env on the server.
+The backend builds its DATABASE_URL from POSTGRES_PASSWORD when DATABASE_URL is unset
+(see top of `backend/app.py`) — that's why a single secret line covers db + backend.
+
 Data lives in `/mnt/docker/apps/solray/data/{postgres,uploads,ntfy}`.
-Update = `git pull` in the repo + redeploy the stack.
+Update after pushing new code = hit Update/Redeploy in Dockge.
+
+**Pull access:** the GHCR packages inherit the repo's visibility. If the repo is
+private, the server needs a docker login (PAT with read:packages) before deploying;
+if public, pulls work anonymously.
+
+The old deploy-key SSH clone flow (`solray-deploy-key`) is obsolete — files kept
+locally only, gitignored, and can be deleted once the server is on the image flow.
 
 ## Architecture notes (things that surprised us before)
 
@@ -94,5 +108,7 @@ Update = `git pull` in the repo + redeploy the stack.
 - Ctrl+K shortcut for search; highlight matched text in results
 - Task comments (separate model) + include in search
 - Board archiving instead of hard delete
-- Server deployment is NOT done yet — dockge-compose.yml is ready, user still needs to
-  clone the repo on the server and create the .env there
+- Server deployment: NOT done yet — the Dockge stack is ready (`dockge-compose.yml`,
+  pull-based via GHCR); user still needs to paste it into Dockge on the server, edit
+  the x-app-env secrets and hit Deploy. First push after the workflow lands triggers
+  the image build.

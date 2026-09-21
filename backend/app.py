@@ -31,7 +31,14 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg2://workspace:workspace_password@localhost:5432/workspace")
+# Compose contract: POSTGRES_PASSWORD (or DB_PASSWORD) env var feeds the default
+# connection string so a single inline secret in the compose file configures
+# everything (postgres + backend) with no .env file.
+_db_pw = os.getenv("DB_PASSWORD") or os.getenv("POSTGRES_PASSWORD") or "workspace_password"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    f"postgresql+psycopg2://workspace:{_db_pw}@db:5432/workspace",
+)
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
 JWT_ALGORITHM = "HS256"
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "./uploads"))
