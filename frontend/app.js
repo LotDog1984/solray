@@ -1224,11 +1224,12 @@ async function renderSettings() {
 
     document.querySelector("#createUserForm").onsubmit = async (event) => {
       event.preventDefault();
-      const payload = formData(event.currentTarget);
+      const form = event.currentTarget; // capture now — it's nulled after any await
+      const payload = formData(form);
       try {
         await api.json("/api/users", "POST", payload);
         state.users = await api.json("/api/users", "GET");
-        event.currentTarget.reset();
+        form.reset();
         renderList(state.users);
       } catch (error) {
         alert(error.message);
