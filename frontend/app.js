@@ -330,9 +330,11 @@ function renderSidebar() {
   }
 
   sidebar.innerHTML = `
-    <div class="brand">${escapeHtml(state.appName || "Private Workspace")}</div>
+    <div class="brand-row">
+      <div class="brand">${escapeHtml(state.appName || "Private Workspace")}</div>
+      <div id="versionBadge" class="version-badge" title="Verzija aplikacije"></div>
+    </div>
     <div style="color:#94a3b8;font-size:13px;">Prijavljen: ${escapeHtml(state.me?.display_name || state.me?.username || "")}</div>
-    <div id="versionBadge" style="color:#8b9bb4;font-size:11px;letter-spacing:0.04em;"></div>
     <div class="side-layer">${layerHtml}</div>
     <div style="display:grid;gap:8px;">
       <button class="secondary" id="navSettings">Postavke</button>
@@ -351,7 +353,7 @@ function bindSidebarEvents(sidebar) {
     .then((r) => (r.ok ? r.text() : null))
     .then((v) => {
       const el = document.querySelector("#versionBadge");
-      if (el && v) el.textContent = `verzija ${v.trim()}`;
+      if (el && v) el.textContent = `v${v.trim()}`;
     })
     .catch(() => {});
 

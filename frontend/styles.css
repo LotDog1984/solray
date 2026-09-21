@@ -109,9 +109,29 @@ textarea {
   gap: 18px;
 }
 
+.brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .brand {
   font-size: 20px;
   font-weight: 800;
+}
+
+/* Version chip in the top-left corner (next to the app name) */
+.version-badge {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 7px;
+  white-space: nowrap;
 }
 
 .sidebar button,
