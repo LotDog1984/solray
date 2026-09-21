@@ -535,10 +535,16 @@ function renderView() {
     content.innerHTML = tabs + '<div class="kanban" id="kanban">Učitavanje...</div>';
     bindTabs(content);
     loadBoard();
-  } else {
+  } else if (state.view === "files") {
     content.innerHTML = tabs + '<div id="filesView"></div>';
     bindTabs(content);
     renderFiles();
+  } else {
+    // Postavke (opened from the left bar). Board tabs are shown only when a
+    // board is open, so the user can jump straight back to Ploča/Datoteke.
+    content.innerHTML = (state.board ? tabs : "") + '<div id="settingsView"></div>';
+    if (state.board) bindTabs(content);
+    renderSettings();
   }
 }
 
