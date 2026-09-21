@@ -67,6 +67,18 @@ Dockge, run in the stack's terminal:
 Then Ctrl+F5 in the browser once (old tab may hold stale JS). No stopping needed —
 force-recreate swaps containers with a few seconds of downtime.
 
+**Reverse proxy (HTTPS) gotchas:** the production site sits behind an NGINX HTTPS
+reverse proxy. When "direct access shows the new version but HTTPS shows old":
+(1) the proxy's `proxy_pass` may still target the OLD app's port — it must point at
+the solray frontend port; if nginx itself runs in a container (Nginx Proxy Manager),
+`127.0.0.1` does not reach the host — use the server's LAN IP instead; (2) a site
+using `root` to serve copied static files never sees container updates — use
+proxy_pass; (3) strip `proxy_cache` or add proxy_no_cache. Diagnose with
+`curl -s http://127.0.0.1:<port>/version.txt` vs `curl -sk https://127.0.0.1/version.txt -H "Host: <domain>"`.
+After switching the browser origin to HTTPS, add `https://<domain>` to the stack's
+CORS_ORIGINS (comma-separated) and update NTFY_BASE_URL — otherwise login breaks.
+Keep `client_max_body_size 200m` on the proxy for file uploads.
+
 **Per-server customization is expected:** the ports, volume paths and the anchor name
 in dockge-compose.yml are EXAMPLES. The production stack intentionally differs
 (different free ports, uploads on slow HDD/NAS storage, DB placed for speed/durability
