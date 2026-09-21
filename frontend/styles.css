@@ -109,6 +109,29 @@ textarea {
   gap: 18px;
 }
 
+/* Search lives in the sidebar under the app name (phone-friendly: no focus steal) */
+.side-search {
+  margin-top: -4px;
+}
+
+.side-search input {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: #f8fafc;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.side-search input::placeholder {
+  color: #94a3b8;
+}
+
+.side-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .brand-row {
   display: flex;
   align-items: center;

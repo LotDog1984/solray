@@ -350,12 +350,16 @@ function renderSidebar() {
       <div id="versionBadge" class="version-badge" title="Verzija aplikacije"></div>
     </div>
     <div style="color:#94a3b8;font-size:13px;">Prijavljen: ${escapeHtml(state.me?.display_name || state.me?.username || "")}</div>
+    <form id="sideSearchForm" class="side-search">
+      <input id="searchInput" type="search" placeholder="Traži projekte, ploče, zadatke…" value="${escapeHtml(state.searchQuery || "")}" autocomplete="off" />
+    </form>
     <div class="side-layer">${layerHtml}</div>
     <div style="display:grid;gap:8px;">
       <button class="secondary" id="navSettings">Postavke</button>
       <button class="danger" id="logoutBtn">Odjava</button>
     </div>
   `;
+  bindSearchInput(sidebar);
   bindSidebarEvents(sidebar);
 }
 
@@ -540,12 +544,16 @@ function renderView() {
   if (!content) return;
   const board = currentBoard();
 
-  // White area: on projects/boards layers it holds only the search box +
-  // results (if a search is active); nothing else until a board is opened.
+  // White area: on main layers it shows search results (when a search is
+  // active) or the notifications panel — never both at once.
+  if (state.searchResults !== null) {
+    content.innerHTML = renderSearchResults();
+    bindSearchResults(content);
+    return;
+  }
   if (state.layer !== "app") {
-    content.innerHTML = renderSearchArea();
-    bindSearch(content);
-    if (!state.searchQuery) renderNotifications(); // Obavijesti live on the main page
+    content.innerHTML = '<div id="notificationsView"></div>';
+    renderNotifications(); // Obavijesti live on the main page
     return;
   }
 
@@ -579,7 +587,7 @@ function renderView() {
   }
 }
 
-function renderSearchArea() {
+function renderSearchResults() {
   const q = escapeHtml(state.searchQuery || "");
   let resultsHtml = "";
   if (state.searchLoading) {
@@ -604,24 +612,16 @@ function renderSearchArea() {
       resultsHtml = `<div class="search-count">${state.searchResults.length} rezultata za “${q}”</div><div class="search-list">${items}</div>`;
     }
   }
-  return `
-    <div class="search-wrap">
-      <form id="searchForm" class="search-form">
-        <input id="searchInput" type="search" placeholder="Traži projekte, ploče i zadatke…" value="${q}" autocomplete="off" />
-        <button type="submit">Traži</button>
-        ${state.searchResults !== null ? '<button type="button" class="secondary" id="searchClear">Očisti</button>' : ""}
-      </form>
-      ${resultsHtml}
-      <div id="notificationsView"></div>
-    </div>`;
+  return `<div class="search-wrap">${resultsHtml}</div>`;
 }
 
-function bindSearch(container) {
-  const form = container.querySelector("#searchForm");
+/* The search input lives in the SIDEBAR under the app name (phone-friendly:
+   no autofocus stealing the keyboard when navigating layers). Results render
+   in the content area. */
+function bindSearchInput(sidebar) {
+  const form = sidebar.querySelector("#sideSearchForm");
   if (!form) return;
   const input = form.querySelector("#searchInput");
-  input.focus();
-  input.setSelectionRange(input.value.length, input.value.length);
 
   let debounce = null;
   input.oninput = () => {
@@ -631,36 +631,19 @@ function bindSearch(container) {
       state.searchQuery = "";
       state.searchResults = null;
       state.searchLoading = false;
-      const area = container.querySelector(".search-wrap");
-      if (area) {
-        const scroll = window.scrollY;
-        area.outerHTML = renderSearchArea();
-        bindSearch(container);
-        window.scrollTo(0, scroll);
-      }
+      renderView();
       return;
     }
     debounce = setTimeout(async () => {
       state.searchQuery = value;
       state.searchLoading = true;
-      const area = container.querySelector(".search-wrap");
-      if (area) {
-        const scroll = window.scrollY;
-        area.outerHTML = renderSearchArea();
-        window.scrollTo(0, scroll);
-      }
+      renderView(); // shows "Pretraživanje…"
       try {
         const data = await api.json(`/api/search?q=${encodeURIComponent(value)}`, "GET");
-        if (state.searchQuery !== value) return;
+        if (state.searchQuery !== value) return; // stale response
         state.searchResults = data.results || [];
         state.searchLoading = false;
-        const fresh = container.querySelector(".search-wrap");
-        if (fresh) {
-          const scroll = window.scrollY;
-          fresh.outerHTML = renderSearchArea();
-          bindSearch(container);
-          window.scrollTo(0, scroll);
-        }
+        renderView();
       } catch (error) {
         state.searchLoading = false;
         state.searchResults = [];
@@ -671,30 +654,11 @@ function bindSearch(container) {
 
   form.onsubmit = (event) => {
     event.preventDefault();
-    const value = input.value.trim();
-    state.searchQuery = value;
-    if (!value) {
-      state.searchResults = null;
-      const area = container.querySelector(".search-wrap");
-      if (area) {
-        area.outerHTML = renderSearchArea();
-        bindSearch(container);
-      }
-    } else {
-      input.oninput({ target: input });
-    }
+    input.oninput({ target: input });
   };
+}
 
-  const clear = form.querySelector("#searchClear");
-  if (clear) {
-    clear.onclick = () => {
-      state.searchQuery = "";
-      state.searchResults = null;
-      state.searchLoading = false;
-      renderView();
-    };
-  }
-
+function bindSearchResults(container) {
   container.querySelectorAll(".search-result").forEach((btn) => {
     btn.onclick = () => {
       const result = state.searchResults?.[Number(btn.dataset.resultIndex)];
