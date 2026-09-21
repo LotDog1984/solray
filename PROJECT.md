@@ -15,7 +15,8 @@ and the commit sha. Server stacks pin an exact version (see dockge-compose.yml).
 
 | Version | What changed |
 |---------|--------------|
-| 1.1.6 | Narrow windows (641–820px) keep the two-pane layout: sidebar shrinks to 170px, paddings/columns tighten so 2–3 kanban columns fit side by side — the 1.1.0–1.1.3 look. Full stacking now only on phones (≤640px). Colors/text unchanged. (Supersedes the 1.1.5 revert — the user wants the desktop look in narrow windows too, but compact, not stacked.) |
+| 1.1.7 | Refined 1.1.6: narrow windows now get the **same desktop layout, scaled** — sidebar is fluid (`clamp(200px, 28vw, 260px)`), paddings/columns keep normal sizes, kanban min-column lowered to 190px so 2–3 columns fit at any width. Phone stacking only ≤480px. (1.1.6's separate compact look with 170px sidebar was too cramped — user wants the image-1 desktop look at every width.) |
+| 1.1.6 | (Refined by 1.1.7) Narrow windows kept two-pane layout with a compact 170px sidebar tier. |
 | 1.1.5 | (Superseded by 1.1.6) Reverted 1.1.4: restored the original 820px breakpoint. | |
 | 1.1.4 | (Superseded by 1.1.6) Lowered breakpoint to 640px. |
 | 1.1.3 | Version badge moved to the top-left corner beside the app name (small chip `vX.Y.Z`, per mockup). |
