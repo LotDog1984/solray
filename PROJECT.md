@@ -65,6 +65,14 @@ Dockge, run in the stack's terminal:
 Then Ctrl+F5 in the browser once (old tab may hold stale JS). No stopping needed —
 force-recreate swaps containers with a few seconds of downtime.
 
+**Per-server customization is expected:** the ports, volume paths and the anchor name
+in dockge-compose.yml are EXAMPLES. The production stack intentionally differs
+(different free ports, uploads on slow HDD/NAS storage, DB placed for speed/durability
+by the owner). Never "fix" a deployed stack back to the template values — only the
+image version lines are meant to be bumped on updates. Secrets live only in the
+deployed stack, never in the repo. JWT secrets should avoid spaces (whitespace is
+preserved by YAML but easily mangled by copy/paste, silently invalidating logins).
+
 **Pull access:** the GHCR packages inherit the repo's visibility. If the repo is
 private, the server needs a docker login (PAT with read:packages) before deploying;
 if public, pulls work anonymously.

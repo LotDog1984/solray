@@ -20,6 +20,8 @@
 #
 #  Data (database, uploaded files, notifications) is stored under
 #  /mnt/docker/apps/solray/data/ and survives updates and restarts.
+#  (Ports and volume paths are examples — customize them freely for your
+#  server; only the two image version lines need bumping on updates.)
 #
 #  First run: open the app URL and register — the first account becomes
 #  the admin and registration closes automatically afterwards.
