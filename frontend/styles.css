@@ -587,6 +587,30 @@ textarea {
   padding: 12px;
 }
 
+/* Unread badge on the Obavijesti button (like a phone app) */
+.badge {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 6px;
+  margin-left: 8px;
+  border-radius: 999px;
+  background: #f97316;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+  line-height: 16px;
+  vertical-align: 1px;
+}
+
+.notification.clickable {
+  cursor: pointer;
+}
+
+.notification.clickable:hover {
+  border-color: var(--accent);
+}
+
 .task {
   background: var(--panel-deep);
   border: 1px solid var(--line);

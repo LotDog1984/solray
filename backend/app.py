@@ -287,12 +287,13 @@ def task_board_id(db: Session, column_id: int) -> int:
     return column.board_id
 
 
-def send_ntfy(user: User, title: str, message: str) -> None:
+def send_ntfy(user: User, title: str, message: str) -> bool:
+    """Push to the user's phone via ntfy. Returns True when the server accepted it."""
     if not NTFY_URL or not user.ntfy_topic:
-        return
+        return False
     safe_topic = re.sub(r"[^A-Za-z0-9_-]", "", user.ntfy_topic)
     if not safe_topic:
-        return
+        return False
     try:
         requests.post(
             f"{NTFY_URL}/{safe_topic}",
@@ -300,8 +301,9 @@ def send_ntfy(user: User, title: str, message: str) -> None:
             headers={"Title": title.encode("utf-8").decode("latin1", "ignore")},
             timeout=3,
         )
+        return True
     except requests.RequestException:
-        pass
+        return False
 
 
 def user_mentioned_in_task(task: Task, user: User) -> bool:
@@ -315,12 +317,17 @@ def user_mentioned_in_task(task: Task, user: User) -> bool:
     return bool(pattern.search(f"{task.title or ''} {task.description or ''}"))
 
 
-def notify_mentions(db: Session, actor: User, task: Task) -> None:
+def notify_task_users(db: Session, actor: User, task: Task) -> None:
+    """Notify every user tagged in the task (@username) or assigned to it —
+    INCLUDING the actor themselves (self-tagging must show in notifications)."""
     usernames = set(re.findall(r"@([A-Za-z0-9_.-]{2,40})", f"{task.title} {task.description}"))
-    if not usernames:
-        return
-    users = db.scalars(select(User).where(User.username.in_(usernames), User.id != actor.id)).all()
-    for user in users:
+    user_ids = {u.id for u in db.scalars(select(User).where(User.username.in_(usernames))).all()}
+    if task.assignee_id:
+        user_ids.add(task.assignee_id)
+    for user_id in user_ids:
+        if not user_id:
+            continue
+        user = db.get(User, user_id)
         message = f"{actor.display_name} vas je tagirao/la u tasku: {task.title}"
         db.add(Notification(user_id=user.id, message=message, link=f"/tasks/{task.id}"))
         send_ntfy(user, "Novi tag", message)
@@ -479,6 +486,19 @@ def update_ntfy(payload: NtfyIn, db: Db, user: CurrentUser):
     db.commit()
     db.refresh(user)
     return user
+
+
+@app.post("/api/me/ntfy/test")
+def test_ntfy(db: Db, user: CurrentUser):
+    """Send a test push so the user can verify their phone setup."""
+    if not NTFY_URL:
+        return {"ok": False, "reason": "ntfy poslužitelj nije postavljen na serveru"}
+    if not user.ntfy_topic:
+        return {"ok": False, "reason": "Prvo spremite svoj ntfy topic"}
+    ok = send_ntfy(user, "SolRay test", "Ovo je testna obavijest iz SolRaya. Ako je vidite na telefonu, sve radi.")
+    if not ok:
+        return {"ok": False, "reason": "ntfy poslužitelj nije odgovorio (provjerite NTFY_URL)"}
+    return {"ok": True, "topic": user.ntfy_topic}
 
 
 @app.get("/api/users", response_model=list[UserOut])
@@ -839,7 +859,7 @@ def create_task(payload: TaskIn, db: Db, user: CurrentUser):
     )
     db.add(task)
     db.flush()
-    notify_mentions(db, user, task)
+    notify_task_users(db, user, task)
     db.commit()
     db.refresh(task)
     return {"id": task.id}
@@ -856,7 +876,7 @@ def update_task(task_id: int, payload: TaskIn, db: Db, user: CurrentUser):
     task.description = payload.description
     task.assignee_id = payload.assignee_id
     task.position = payload.position
-    notify_mentions(db, user, task)
+    notify_task_users(db, user, task)
     db.commit()
     return {"ok": True}
 
@@ -934,10 +954,42 @@ def download_file(file_id: int, db: Db, _: CurrentUser):
 @app.get("/api/notifications")
 def notifications(db: Db, user: CurrentUser):
     rows = db.scalars(select(Notification).where(Notification.user_id == user.id).order_by(Notification.created_at.desc())).all()
-    return [
-        {"id": n.id, "message": n.message, "link": n.link, "is_read": n.is_read, "created_at": n.created_at.isoformat()}
-        for n in rows
-    ]
+    out = []
+    for n in rows:
+        task_id = None
+        board_id = None
+        if n.link and n.link.startswith("/tasks/"):
+            try:
+                task = db.get(Task, int(n.link.split("/")[2]))
+                if task:
+                    task_id = task.id
+                    board_id = task_board_id(db, task.column_id)
+            except (ValueError, IndexError):
+                pass
+        out.append(
+            {"id": n.id, "message": n.message, "link": n.link, "is_read": n.is_read,
+             "task_id": task_id, "board_id": board_id, "created_at": n.created_at.isoformat()}
+        )
+    return out
+
+
+@app.get("/api/notifications/unread-count")
+def unread_count(db: Db, user: CurrentUser):
+    count = db.scalar(
+        select(func.count(Notification.id)).where(Notification.user_id == user.id, Notification.is_read == False)  # noqa: E712
+    )
+    return {"count": count or 0}
+
+
+@app.patch("/api/notifications/read-all")
+def mark_all_read(db: Db, user: CurrentUser):
+    rows = db.scalars(
+        select(Notification).where(Notification.user_id == user.id, Notification.is_read == False)  # noqa: E712
+    ).all()
+    for row in rows:
+        row.is_read = True
+    db.commit()
+    return {"ok": True, "updated": len(rows)}
 
 
 @app.patch("/api/notifications/{notification_id}/read")

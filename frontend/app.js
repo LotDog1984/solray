@@ -50,6 +50,7 @@ const state = {
   searchQuery: "",
   searchResults: null,
   searchLoading: false,
+  unreadCount: 0,
 };
 
 const app = document.querySelector("#app");
@@ -126,6 +127,8 @@ async function boot() {
     if (!state.project && state.projects.length) state.project = state.projects[0].id;
     await loadAppName();
     renderApp();
+    refreshUnreadCount();
+    setInterval(refreshUnreadCount, 30000); // badge stays fresh even idle
   } catch {
     localStorage.removeItem("token");
     api.token = "";
@@ -232,6 +235,18 @@ function currentBoard() {
   return allBoards().find((b) => b.id === state.board) || null;
 }
 
+async function refreshUnreadCount() {
+  try {
+    const data = await api.json("/api/notifications/unread-count", "GET");
+    if (data.count !== state.unreadCount) {
+      state.unreadCount = data.count;
+      renderSidebar();
+    }
+  } catch {
+    /* ignore transient errors */
+  }
+}
+
 async function refreshProjects() {
   await loadProjects();
   if (state.layer === "boards" && !currentProject()) state.layer = "projects";
@@ -300,7 +315,7 @@ function renderSidebar() {
         <input name="name" placeholder="Novi projekt..." required />
         <button type="submit" title="Dodaj projekt">+</button>
       </form>
-      <button class="secondary ${state.view === "notifications" ? "active" : ""}" id="navNotifications">Obavijesti</button>`;
+      <button class="secondary notif-btn ${state.view === "notifications" ? "active" : ""}" id="navNotifications">Obavijesti${state.unreadCount ? `<span class="badge">${state.unreadCount > 99 ? "99+" : state.unreadCount}</span>` : ""}</button>`;
   } else {
     const project = currentProject();
     const rows = (project?.boards || [])
@@ -438,6 +453,7 @@ function bindSidebarEvents(sidebar) {
       state.searchResults = null;
       renderSidebar();
       renderView();
+      renderNotifications();
     };
   }
 
@@ -773,6 +789,7 @@ function renderKanban(board) {
           position: column ? column.tasks.length : 0,
         });
         await loadBoard();
+        refreshUnreadCount(); // a self-tag or assignment must bump the badge
       } catch (error) {
         alert(error.message);
       }
@@ -1002,28 +1019,57 @@ async function renderNotifications() {
     view.innerHTML = `<div class="panel">${escapeHtml(error.message)}</div>`;
     return;
   }
+  const unread = state.notifications.filter((n) => !n.is_read).length;
   const rows = state.notifications
     .map(
       (n) => `
-      <div class="notification ${n.is_read ? "" : "unread"}">
+      <div class="notification ${n.is_read ? "" : "unread"} ${n.task_id && n.board_id ? "clickable" : ""}" ${n.task_id && n.board_id ? `data-task="${n.task_id}" data-board="${n.board_id}"` : ""}>
         <strong>${escapeHtml(n.message)}</strong>
         <small class="muted">${formatDate(n.created_at)}</small>
         ${n.is_read ? "" : `<button class="secondary mark-read" data-id="${n.id}">Označi kao pročitano</button>`}
       </div>`
     )
     .join("");
-  view.innerHTML = `<div class="files panel">${rows || '<div class="muted">Nema obavijesti.</div>'}</div>`;
+  view.innerHTML = `<div class="files panel">
+    ${state.notifications.length ? `<div class="row" style="justify-content:flex-end;"><button class="secondary" id="markAllRead" ${unread ? "" : "disabled"}>Označi sve kao pročitano${unread ? ` (${unread})` : ""}</button></div>` : ""}
+    ${rows || '<div class="muted">Nema obavijesti.</div>'}
+  </div>`;
+
+  view.querySelectorAll(".notification.clickable").forEach((el) => {
+    el.onclick = async (event) => {
+      if (event.target.closest(".mark-read")) return;
+      await openSearchResult({ type: "task", board_id: Number(el.dataset.board), task_id: Number(el.dataset.task) });
+      try {
+        await api.request(`/api/notifications/${el.querySelector(".mark-read")?.dataset.id || ""}/read`, { method: "PATCH" });
+      } catch { /* id may be empty if already read */ }
+      refreshUnreadCount();
+    };
+  });
 
   view.querySelectorAll(".mark-read").forEach((btn) => {
     btn.onclick = async () => {
       try {
         await api.request(`/api/notifications/${btn.dataset.id}/read`, { method: "PATCH" });
         await renderNotifications();
+        refreshUnreadCount();
       } catch (error) {
         alert(error.message);
       }
     };
   });
+
+  const markAll = view.querySelector("#markAllRead");
+  if (markAll) {
+    markAll.onclick = async () => {
+      try {
+        await api.request("/api/notifications/read-all", { method: "PATCH" });
+        await renderNotifications();
+        refreshUnreadCount();
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+  }
 }
 
 /* --------------------------------- settings -------------------------------- */
@@ -1079,8 +1125,10 @@ async function renderSettings() {
       <form id="ntfyForm" class="row">
         <input name="topic" placeholder="npr. branko-private-123" value="${escapeHtml(state.me?.ntfy_topic || "")}" />
         <button type="submit">Spremi</button>
+        <button type="button" class="secondary" id="ntfyTest">Testiraj</button>
       </form>
-      <p class="muted" style="font-size:13px;">Unesite isti topic i u ntfy aplikaciji na telefonu za push obavijesti.</p>
+      <p class="muted" style="font-size:13px;">Unesite isti topic i u ntfy aplikaciji na telefonu (npr. https://ntfy.sh/vas-topic) pa kliknite „Testiraj” — na telefon bi trebala stići obavijest.</p>
+      <div id="ntfyTestResult" class="muted" style="font-size:13px;"></div>
     </div>
     ${adminSection}
   `;
@@ -1093,6 +1141,17 @@ async function renderSettings() {
       alert("Topic spremljen.");
     } catch (error) {
       alert(error.message);
+    }
+  };
+
+  document.querySelector("#ntfyTest").onclick = async () => {
+    const out = document.querySelector("#ntfyTestResult");
+    out.textContent = "Slanje...";
+    try {
+      const res = await api.json("/api/me/ntfy/test", "POST", {});
+      out.textContent = res.ok ? `✓ Poslano na topic „${res.topic}” — provjerite telefon.` : `✗ ${res.reason}`;
+    } catch (error) {
+      out.textContent = `✗ ${error.message}`;
     }
   };
 
