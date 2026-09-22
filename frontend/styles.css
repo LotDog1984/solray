@@ -844,7 +844,108 @@ textarea {
   gap: 10px;
 }
 
-.file-item,
+/* Files: list + grid views (1.4.0) */
+.files-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.files-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.view-toggle {
+  display: flex;
+  gap: 6px;
+}
+
+.view-toggle button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.files-list {
+  display: grid;
+  gap: 10px;
+}
+
+.files-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.file-thumb {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 8px;
+  background: #0d1526;
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.file-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.file-thumb .file-icon {
+  font-size: 34px;
+}
+
+.file-card {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-deep);
+  padding: 10px;
+}
+
+.file-card .file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-item {
+  display: grid;
+  grid-template-columns: 64px 1fr auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.file-item .file-thumb.small {
+  width: 64px;
+  height: 48px;
+  aspect-ratio: auto;
+}
+
+.file-item .file-thumb.small img {
+  object-fit: cover;
+}
+
+.file-item .file-meta {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.file-item .file-meta strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .notification {
   display: grid;
   gap: 4px;

@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import shutil
@@ -6,13 +7,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
+import base64
+
 import requests
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from PIL import Image
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import (
     Boolean,
@@ -137,6 +141,8 @@ class StoredFile(Base):
     content_type: Mapped[str] = mapped_column(String(160), default="application/octet-stream")
     size: Mapped[int] = mapped_column(Integer)
     uploaded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    # 1.4.0: files are organized per project (NULL = uploaded before folders existed)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     uploaded_by: Mapped[User] = relationship()
 
@@ -324,6 +330,48 @@ def send_ntfy(user: User, title: str, message: str) -> bool:
         return False
 
 
+def project_folder_name(name: str) -> str:
+    """Filesystem-safe folder name derived from a project's name."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name.strip()).strip("._-")
+    return (safe[:60] or "projekt")
+
+
+def project_upload_dir(db: Session, project_id: int | None) -> Path:
+    """Uploads live in per-project folders named after the project.
+    Files uploaded before this feature stay at the storage root."""
+    if not project_id:
+        return STORAGE_DIR
+    project = db.get(Project, project_id)
+    if not project:
+        return STORAGE_DIR
+    folder = STORAGE_DIR / project_folder_name(project.name)
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def user_from_token(token: str, db: Session) -> User:
+    """Resolve a user from a raw JWT — also used for <img>/download URLs,
+    where the browser cannot send an Authorization header."""
+    try:
+        payload = jwt.decode(token or "", JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = int(payload["sub"])
+    except (JWTError, KeyError, ValueError):
+        raise HTTPException(status_code=401, detail="Neispravan token")
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="Korisnik ne postoji")
+    return user
+
+
+def user_from_query_token(
+    token: Annotated[str | None, Query()] = None, db: Db = None
+) -> User:
+    """Dependency for media endpoints (<img src=...?token=JWT>)."""
+    if not token:
+        raise HTTPException(status_code=401, detail="Nedostaje token")
+    return user_from_token(token, db)
+
+
 def user_mentioned_in_task(task: Task, user: User) -> bool:
     """True if this user is tagged in the task (@username in title/description
     or directly assigned). Used to highlight the task in that user's view."""
@@ -351,6 +399,8 @@ def notify_task_users(db: Session, actor: User, task: Task) -> None:
         send_ntfy(user, "Novi tag", message)
 
 
+THUMB_SIZE = (420, 420)  # max thumbnail dimensions (JPEG, quality 80)
+
 app = FastAPI(title="Private Workspace")
 app.add_middleware(
     CORSMiddleware,
@@ -372,6 +422,8 @@ def startup() -> None:
         # 1.3.0: task completion + checklist items
         conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ NULL"))
+        # 1.4.0: files organized per project
+        conn.execute(text("ALTER TABLE files ADD COLUMN IF NOT EXISTS project_id INTEGER"))
     # Backfill: put every existing board into a default project so nothing is lost.
     db = SessionLocal()
     try:
@@ -595,6 +647,7 @@ def create_project(payload: ProjectIn, db: Db, user: CurrentUser):
     db.add(project)
     db.commit()
     db.refresh(project)
+    project_upload_dir(db, project.id)  # create the per-project uploads folder right away
     return {"id": project.id, "name": project.name}
 
 
@@ -604,8 +657,25 @@ def rename_project(project_id: int, payload: ProjectIn, db: Db, user: CurrentUse
     if not project:
         raise HTTPException(status_code=404, detail="Projekt ne postoji")
     ensure_project_manage(db, user, project)
+    old_dir = project_upload_dir(db, project.id)
     project.name = payload.name.strip()[:120] or project.name
     db.commit()
+    new_dir = project_upload_dir(db, project.id)
+    if old_dir != new_dir and old_dir.exists():
+        try:
+            if new_dir.exists():
+                # name collision (rare) — move file-by-file instead of failing
+                for f in old_dir.iterdir():
+                    shutil.move(str(f), str(new_dir / f.name))
+                old_dir.rmdir()
+            else:
+                old_dir.rename(new_dir)
+            for f in db.scalars(select(StoredFile).where(StoredFile.project_id == project.id)).all():
+                if not (STORAGE_DIR / f.stored_name).exists() and (new_dir / Path(f.stored_name).name).exists():
+                    f.stored_name = f"{new_dir.name}/{Path(f.stored_name).name}"
+            db.commit()
+        except OSError:
+            pass  # files stay readable at the old path; nothing breaks
     return {"id": project.id, "name": project.name}
 
 
@@ -616,7 +686,11 @@ def delete_project(project_id: int, db: Db, user: CurrentUser):
         raise HTTPException(status_code=404, detail="Projekt ne postoji")
     ensure_project_manage(db, user, project)
     # ORM cascade removes boards -> columns -> tasks; board_members rows go
-    # through the FK ON DELETE CASCADE.
+    # through the FK ON DELETE CASCADE. Uploaded files keep living in their
+    # folder on disk — detach them first so the FK doesn't block deletion.
+    db.execute(
+        StoredFile.__table__.update().where(StoredFile.project_id == project_id).values(project_id=None)
+    )
     db.delete(project)
     db.commit()
     return {"ok": True}
@@ -1016,6 +1090,28 @@ def delete_task(task_id: int, db: Db, user: CurrentUser):
     return {"ok": True}
 
 
+@app.get("/api/projects/{project_id}/files")
+def list_project_files(project_id: int, db: Db, user: CurrentUser):
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Projekt ne postoji")
+    # Shared workspace: any authenticated user may see the project's files.
+    files = db.scalars(
+        select(StoredFile).where(StoredFile.project_id == project_id).order_by(StoredFile.created_at.desc())
+    ).all()
+    return [
+        {
+            "id": f.id,
+            "name": f.original_name,
+            "size": f.size,
+            "content_type": f.content_type,
+            "uploaded_by": f.uploaded_by.display_name,
+            "created_at": f.created_at.isoformat(),
+        }
+        for f in files
+    ]
+
+
 @app.get("/api/files")
 def list_files(db: Db, _: CurrentUser):
     files = db.scalars(select(StoredFile).order_by(StoredFile.created_at.desc())).all()
@@ -1032,23 +1128,105 @@ def list_files(db: Db, _: CurrentUser):
     ]
 
 
-@app.post("/api/files")
-def upload_file(db: Db, user: CurrentUser, file: UploadFile = File(...)):
+def is_image(ct: str) -> bool:
+    return (ct or "").lower().startswith("image/")
+
+
+def is_image(ct: str) -> bool:
+    return (ct or "").lower().startswith("image/")
+
+
+def make_thumbnail(path: Path) -> bytes | None:
+    """JPEG thumbnail bytes for an image file; None when not an image or broken."""
+    try:
+        with Image.open(path) as im:
+            im.thumbnail(THUMB_SIZE)
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=80)
+        return buf.getvalue()
+    except Exception:
+        return None  # broken/unsupported image: download still works, thumb shows icon
+
+
+def store_upload(db: Session, user: User, file: UploadFile, project_id: int | None) -> dict:
+    """Save an upload into the project's folder (root for legacy/no-project),
+    generate a thumbnail for images, record it, return {"id", "name"}."""
+    folder = project_upload_dir(db, project_id)
     stored_name = f"{uuid.uuid4().hex}_{Path(file.filename or 'file').name}"
-    target = STORAGE_DIR / stored_name
+    target = folder / stored_name
     with target.open("wb") as handle:
         shutil.copyfileobj(file.file, handle)
+    thumb_bytes = make_thumbnail(target) if is_image(file.content_type or "") else None
     row = StoredFile(
         original_name=file.filename or stored_name,
-        stored_name=stored_name,
+        # relative path under STORAGE_DIR — "Folder/uuid_name" for project files,
+        # flat name for legacy files (they live at the storage root)
+        stored_name=f"{folder.name}/{stored_name}" if project_id else stored_name,
         content_type=file.content_type or "application/octet-stream",
         size=target.stat().st_size,
         uploaded_by_id=user.id,
+        project_id=project_id,
     )
     db.add(row)
     db.commit()
     db.refresh(row)
+    if thumb_bytes is not None:
+        thumbnail_path(target).write_bytes(thumb_bytes)
     return {"id": row.id, "name": row.original_name}
+
+
+@app.post("/api/projects/{project_id}/files")
+def upload_project_file(
+    project_id: int,
+    db: Db,
+    user: CurrentUser,
+    file: UploadFile = File(...),
+):
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Projekt ne postoji")
+    # Shared workspace: any authenticated user may upload to the project.
+    return store_upload(db, user, file, project_id)
+
+
+@app.post("/api/files")
+def upload_file(db: Db, user: CurrentUser, file: UploadFile = File(...), project_id: int | None = Form(None)):
+    return store_upload(db, user, file, project_id)
+
+
+def storage_path(row: StoredFile) -> Path:
+    """Absolute path of a stored file; guards against path escapes."""
+    path = (STORAGE_DIR / row.stored_name).resolve()
+    if not path.is_relative_to(STORAGE_DIR.resolve()):
+        raise HTTPException(status_code=400, detail="Neispravna putanja datoteke")
+    return path
+
+
+def thumbnail_path(original: Path) -> Path:
+    return original.with_name(original.name + ".thumb.jpg")
+
+
+@app.get("/api/files/{file_id}/thumb")
+def file_thumb(
+    file_id: int,
+    db: Db,
+    _: User = Depends(user_from_query_token),
+):
+    """JPEG thumbnail for <img> tags (auth via ?token= — browsers can't add
+    Authorization headers to image requests). Falls back to a 1px placeholder
+    when no thumbnail exists (non-images, legacy files)."""
+    row = db.get(StoredFile, file_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Datoteka ne postoji")
+    path = storage_path(row)
+    thumb = thumbnail_path(path)
+    if not thumb.exists():
+        # 1x1 transparent JPEG — keeps <img> clean for non-image/legacy files
+        return Response(
+            content=base64.b64decode("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwA//Z"),
+            media_type="image/jpeg",
+        )
+    return FileResponse(thumb, media_type="image/jpeg", filename="thumb.jpg")
 
 
 @app.get("/api/files/{file_id}/download")
@@ -1056,7 +1234,7 @@ def download_file(file_id: int, db: Db, _: CurrentUser):
     row = db.get(StoredFile, file_id)
     if not row:
         raise HTTPException(status_code=404, detail="Datoteka ne postoji")
-    path = STORAGE_DIR / row.stored_name
+    path = storage_path(row)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Datoteka nije pronađena na disku")
     return FileResponse(path, media_type=row.content_type, filename=row.original_name)

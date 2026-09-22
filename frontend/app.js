@@ -51,6 +51,7 @@ const state = {
   searchResults: null,
   searchLoading: false,
   unreadCount: 0,
+  filesMode: localStorage.getItem("solray_files_mode") || "list", // "list" | "grid"
 };
 
 const app = document.querySelector("#app");
@@ -1066,40 +1067,89 @@ function findTaskColumn(board, taskId) {
 
 /* ---------------------------------- files --------------------------------- */
 
+function fileIcon(contentType, name) {
+  const ct = (contentType || "").toLowerCase();
+  const ext = (name || "").split(".").pop().toLowerCase();
+  if (ct.startsWith("image/")) return "🖼️";
+  if (ct.includes("pdf") || ext === "pdf") return "📕";
+  if (ct.includes("spreadsheet") || ["xls", "xlsx", "csv"].includes(ext)) return "📊";
+  if (ct.includes("word") || ["doc", "docx"].includes(ext)) return "📘";
+  if (ct.includes("zip") || ["zip", "rar", "7z"].includes(ext)) return "🗜️";
+  if (ct.startsWith("video/")) return "🎬";
+  if (ct.startsWith("audio/")) return "🎵";
+  if (ct.startsWith("text/") || ["txt", "md"].includes(ext)) return "📄";
+  return "📎";
+}
+
 async function renderFiles() {
   const view = document.querySelector("#filesView");
   if (!view) return;
   view.innerHTML = '<div class="panel">Učitavanje...</div>';
   let files = [];
   try {
-    files = await api.json("/api/files", "GET");
+    files = await api.json(`/api/projects/${state.project}/files`, "GET");
   } catch (error) {
     view.innerHTML = `<div class="panel">${escapeHtml(error.message)}</div>`;
     return;
   }
+  const listUrl = (f) => `/api/files/${f.id}/thumb?token=${encodeURIComponent(api.token)}`;
 
-  const rows = files
-    .map(
-      (f) => `
-      <div class="file-item">
-        <strong>${escapeHtml(f.name)}</strong>
-        <small class="muted">${formatSize(f.size)} · ${escapeHtml(f.uploaded_by)} · ${formatDate(f.created_at)}</small>
+  const items = files
+    .map((f) => {
+      const meta = `${formatSize(f.size)} · ${escapeHtml(f.uploaded_by)} · ${formatDate(f.created_at)}`;
+      const isImg = (f.content_type || "").toLowerCase().startsWith("image/");
+      if (state.filesMode === "grid") {
+        return `
+      <div class="file-card" data-file-id="${f.id}" title="${escapeHtml(f.name)}">
+        <div class="file-thumb ${isImg ? "" : "noimg"}">
+          ${isImg ? `<img loading="lazy" src="${listUrl(f)}" alt="" />` : `<span class="file-icon">${fileIcon(f.content_type, f.name)}</span>`}
+        </div>
+        <strong class="file-name">${escapeHtml(f.name)}</strong>
+        <small class="muted">${meta}</small>
         <button class="secondary download-file" data-file-id="${f.id}">Preuzmi</button>
-      </div>`
-    )
+      </div>`;
+      }
+      return `
+      <div class="file-item" data-file-id="${f.id}">
+        <div class="file-thumb small ${isImg ? "" : "noimg"}">
+          ${isImg ? `<img loading="lazy" src="${listUrl(f)}" alt="" />` : `<span class="file-icon">${fileIcon(f.content_type, f.name)}</span>`}
+        </div>
+        <div class="file-meta">
+          <strong>${escapeHtml(f.name)}</strong>
+          <small class="muted">${meta}</small>
+        </div>
+        <button class="secondary download-file" data-file-id="${f.id}">Preuzmi</button>
+      </div>`;
+    })
     .join("");
 
   view.innerHTML = `
     <div class="grid">
       <form id="uploadForm" class="panel" style="display:grid;gap:10px;">
+        <strong>Datoteke projekta: ${escapeHtml(currentProject()?.name || "")}</strong>
         <input type="file" name="file" required />
         <button type="submit">Učitaj datoteku</button>
       </form>
-      <div class="files panel">
-        ${rows || '<div class="muted">Nema datoteka.</div>'}
+      <div class="panel files-panel">
+        <div class="files-toolbar">
+          <strong>Datoteke (${files.length})</strong>
+          <div class="view-toggle" role="group">
+            <button type="button" class="secondary ${state.filesMode === "list" ? "active" : ""}" data-mode="list" title="Prikaz liste">☰ Lista</button>
+            <button type="button" class="secondary ${state.filesMode === "grid" ? "active" : ""}" data-mode="grid" title="Prikaz mreže">▦ Mreža</button>
+          </div>
+        </div>
+        <div class="files ${state.filesMode === "grid" ? "files-grid" : "files-list"}">${items || '<div class="muted">Nema datoteka u ovom projektu.</div>'}</div>
       </div>
     </div>
   `;
+
+  view.querySelectorAll(".view-toggle button").forEach((btn) => {
+    btn.onclick = () => {
+      state.filesMode = btn.dataset.mode;
+      localStorage.setItem("solray_files_mode", state.filesMode);
+      renderFiles();
+    };
+  });
 
   document.querySelector("#uploadForm").onsubmit = async (event) => {
     event.preventDefault();
@@ -1108,6 +1158,7 @@ async function renderFiles() {
     if (!fileInput.files.length) return;
     const fd = new FormData();
     fd.append("file", fileInput.files[0]);
+    fd.append("project_id", String(state.project));
     try {
       await api.upload("/api/files", fd);
       await renderFiles();

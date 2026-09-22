@@ -15,6 +15,7 @@ and the commit sha. Server stacks pin an exact version (see dockge-compose.yml).
 
 | Version | What changed |
 |---------|--------------|
+| 1.4.0 | **Per-project file folders + thumbnails + list/grid view:** every project now has its own uploads folder named after the project (`uploads/<Projekt>/uuid_datoteka`), created automatically when the project is created; renaming a project renames the folder and rewrites stored paths. Uploads go to the project the board belongs to (Datoteke tab is per project: `GET/POST /api/projects/{id}/files`; legacy `/api/files` upload still works and accepts an optional `project_id` form field). Image uploads get JPEG thumbnails (Pillow, max 420px, stored next to the file as `*.thumb.jpg`) served by `GET /api/files/{id}/thumb?token=JWT` — query-token auth because `<img>` tags cannot send headers; legacy/non-image files get a 1px placeholder (or an icon in the UI). Files view has a **Lista / Mreža** toggle (persisted in localStorage): list rows with small thumbs, grid cards with big thumbs. `storage_path()` helper centralizes path resolution + guards against path escape.
 | 1.3.2 | **Visible checklist on task cards:** checklist items now render **directly on the task card** (collapsed view) with a real checkbox per item — tick one and the row turns **green** (tinted background, green text, strike-through). Root rendering bug fixed: checkboxes were inheriting the generic text-input style (dark background + padding → invisible dark square). All checkboxes now have a clean 16px native look with green accent. Tasks **auto-open after creation** so the fresh checklist is immediately visible and tickable. Full checklist editor (add/rename/delete items) remains in Uredi. When every item is ticked, the task auto-completes (all-checked rule from 1.3.0). |
 | 1.3.2 | **Checklist completion bug fix + card checklists:** found the real root cause of tasks never auto-completing: the SQLAlchemy session runs with `autoflush=False`, so the tick that triggered the recompute was still in memory when the completion COUNT ran — the flag always lagged one tick behind. Fixed with `db.flush()` inside `recompute_task_completion`. Also: the full checklist (item + checkbox) now renders **directly on the task card** and inside the editor (every row has a visible checkbox); a new task auto-opens after creation so the whole list is visible immediately; ticking a checkbox turns the row green; all checked → task auto-completes (green card, bottom of column), unchecking any item reopens it. Verified end-to-end through the UI: 0/5 → 5/5 → auto-complete → untick → reopen.
 | 1.3.1 | **Phone keyboard fix + search relocation:** the search input moved from the content area into the **sidebar, right under the app name** (dark blue area), visible on every layer. The old code **autofocused** the search input on every render — on a phone, tapping a project re-rendered the view, focused the input, and forced the keyboard open. Autofocus is now completely gone; the keyboard only opens when the user taps the search field. Search results still render in the content area (main page shows results OR notifications, never both). |
@@ -171,6 +172,34 @@ locally only, gitignored, and can be deleted once the server is on the image flo
 7. Global search (projects/boards/tasks) with click-through navigation
 
 ## Known ideas / next steps
+
+### Mobile Android app — the agreed plan (planned, NOT started)
+
+Decisions made with the user (do not re-litigate):
+
+- **Distribution & builds: GitHub Actions.** Add a workflow (sibling of `docker-publish.yml`)
+  that on every `v*` tag builds a signed APK and attaches it to the GitHub Release
+  (same tag → Docker images on GHCR + `solray-x.y.z.apk` on the Releases page).
+  User never builds locally. Simple generated signing key stored as a GitHub secret.
+- **Notifications: level 2.** The app itself subscribes to the user's ntfy topic via
+  **WebSocket** (`wss://<instance-ntfy>/topic/ws`) — pushes appear inside the app while
+  it's open, with live board refresh when a `task_changed` event arrives. Team is all
+  Android except ONE iPhone → that device keeps the ntfy app as fallback (iOS forbids
+  persistent background sockets); UnifiedPush/APNs only if ever needed later.
+- **Server-address onboarding (no baked domains).** First run: single input for the
+  team's URL (e.g. `https://tim-a.mediahost.stream`) → validate via public
+  `GET /api/settings` (shows the instance's app_name as confirmation) → login → store
+  base URL + JWT. Multiple instances can be stored; "switch team" = switch pair.
+  **Contract rule: `GET /api/settings` is frozen and may only gain optional fields.**
+- **Multi-instance ready:** the backend is already env-driven (no baked domains);
+  deploying team B = same stack yaml with a new name, different port, new nginx block.
+  Prefer per-instance ntfy (each stack brings its own) — no topic collisions.
+- **API stability rule (keep forever): additive only — never rename/reuse fields,
+  new fields must be optional.** 401 → re-login screen; tolerate unknown JSON fields.
+- Suggested client: Flutter (or RN) from the same repo (`mobile/` folder), API docs
+  live at `/docs` on any instance (FastAPI auto-generated).
+
+### Smaller ideas
 
 - Ctrl+K shortcut for search; highlight matched text in results
 - Task comments (separate model) + include in search
