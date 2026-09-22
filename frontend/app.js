@@ -763,7 +763,7 @@ function renderKanban(board) {
         .map((inp, idx) => ({ title: inp.value.trim(), is_done: false, position: idx }))
         .filter((i) => i.title);
       try {
-        await api.json("/api/tasks", "POST", {
+        const created = await api.json("/api/tasks", "POST", {
           column_id: columnId,
           title: payload.title,
           description: payload.description || "",
@@ -771,6 +771,7 @@ function renderKanban(board) {
           position: column ? column.tasks.filter((t) => !t.completed).length : 0,
           items,
         });
+        if (created && created.id) state.openTaskId = created.id; // show the fresh checklist right away
         await loadBoard();
         refreshUnreadCount(); // a self-tag or assignment must bump the badge
       } catch (error) {
@@ -833,13 +834,28 @@ function renderTask(task) {
       </label>
       <strong class="task-title">${escapeHtml(task.title)}</strong>
     </div>
-    ${task.description ? `<p>${escapeHtml(task.description)}</p>` : ""}
     ${
       hasItems && !open
         ? `<div class="todo-progress ${task.completed ? "all-done" : ""}">${task.completed ? "✓ " : ""}${done}/${items.length} stavki</div>`
         : ""
     }
     <small>${task.assignee ? `👤 ${escapeHtml(task.assignee)}` : "Nedodijeljeno"}</small>
+    ${task.description ? `<p>${escapeHtml(task.description)}</p>` : ""}
+    ${
+      hasItems && !open
+        ? `<div class="todo-list" data-task-id="${task.id}">
+      ${items
+        .map(
+          (i) => `
+      <label class="todo-row ${i.is_done ? "is-done" : ""}" data-item-id="${i.id}">
+        <input type="checkbox" class="todo-check" data-item-id="${i.id}" ${i.is_done ? "checked" : ""} />
+        <span class="todo-row-text">${escapeHtml(i.title)}</span>
+      </label>`
+        )
+        .join("")}
+    </div>`
+        : ""
+    }
     <div class="row">
       <button class="secondary edit-task" data-task-id="${task.id}">Uredi</button>
       <button class="danger delete-task" data-task-id="${task.id}">Obriši</button>
@@ -864,7 +880,7 @@ function renderTask(task) {
             ${items
               .map(
                 (i) => `
-            <div class="todo-item" data-item-id="${i.id}">
+            <div class="todo-item ${i.is_done ? "is-done" : ""}" data-item-id="${i.id}">
               <input type="checkbox" class="todo-check" data-item-id="${i.id}" ${i.is_done ? "checked" : ""} />
               <input class="todo-text" value="${escapeHtml(i.title)}" />
               <button type="button" class="secondary todo-del" data-item-id="${i.id}" title="Obriši stavku">✕</button>
@@ -913,6 +929,26 @@ function bindTaskEvents(board) {
         alert(error.message);
       }
     };
+  });
+
+  // Checklist items shown directly on the card — one click to tick
+  document.querySelectorAll(".todo-list").forEach((list) => {
+    const taskId = list.dataset.taskId;
+    list.querySelectorAll(".todo-check").forEach((check) => {
+      check.onchange = async () => {
+        const row = check.closest(".todo-row");
+        try {
+          await api.json(`/api/tasks/${taskId}/items/${check.dataset.itemId}`, "PATCH", {
+            title: row.querySelector(".todo-row-text").textContent,
+            is_done: check.checked,
+          });
+          await loadBoard();
+        } catch (error) {
+          check.checked = !check.checked;
+          alert(error.message);
+        }
+      };
+    });
   });
 
   // Checklist item interactions (inside the expanded task editor)

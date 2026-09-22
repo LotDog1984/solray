@@ -213,7 +213,7 @@ class TaskItemIn(BaseModel):
     id: int | None = None
     title: str
     is_done: bool = False
-    position: int = 0
+    position: int | None = None  # None = keep current position (partial updates)
 
 
 class TaskIn(BaseModel):
@@ -828,10 +828,23 @@ def serialize_task(task: Task) -> dict:
 
 def recompute_task_completion(db: Session, task: Task) -> None:
     """A task with checklist items is completed iff ALL items are done.
-    A manual toggle is only allowed for tasks without items."""
-    if task.items:
-        task.completed = all(i.is_done for i in task.items)
+    Counts directly in the DB so concurrent item updates can't leave a stale flag."""
+    # The session runs with autoflush=False: pending item changes (the tick that
+    # triggered this recompute) are still only in memory, so a COUNT here would
+    # read the pre-change values. Flush first so the count sees the new state.
+    db.flush()
+    total = db.scalar(select(func.count()).select_from(TaskItem).where(TaskItem.task_id == task.id)) or 0
+    if total > 0:
+        done = db.scalar(select(func.count()).select_from(TaskItem).where(TaskItem.task_id == task.id, TaskItem.is_done.is_(True))) or 0
+        task.completed = done == total
     task.completed_at = datetime.now(timezone.utc) if task.completed else None
+
+
+def lock_task_for_update(db: Session, task_id: int) -> None:
+    """Serialize concurrent checklist mutations on one task (SELECT ... FOR UPDATE).
+    Without this, two near-simultaneous item PATCHes each count before the other
+    commits and the last writer leaves a stale completed flag."""
+    db.execute(select(Task).where(Task.id == task_id).with_for_update())
 
 
 def sorted_tasks(tasks: list[Task]) -> list[Task]:
@@ -927,6 +940,7 @@ def add_task_item(task_id: int, payload: TaskItemIn, db: Db, user: CurrentUser):
     if not task:
         raise HTTPException(status_code=404, detail="Task ne postoji")
     ensure_board_access(db, user, task_board_id(db, task.column_id))
+    lock_task_for_update(db, task.id)
     title = payload.title.strip()
     if not title:
         raise HTTPException(status_code=400, detail="Stavka ne smije biti prazna")
@@ -949,6 +963,7 @@ def update_task_item(task_id: int, item_id: int, payload: TaskItemIn, db: Db, us
     item = db.get(TaskItem, item_id)
     if not item or item.task_id != task.id:
         raise HTTPException(status_code=404, detail="Stavka ne postoji")
+    lock_task_for_update(db, task.id)
     was_completed = task.completed
     if payload.title.strip():
         item.title = payload.title.strip()[:255]
@@ -969,6 +984,7 @@ def delete_task_item(task_id: int, item_id: int, db: Db, user: CurrentUser):
     item = db.get(TaskItem, item_id)
     if not item or item.task_id != task.id:
         raise HTTPException(status_code=404, detail="Stavka ne postoji")
+    lock_task_for_update(db, task.id)
     db.delete(item)
     was_completed = task.completed
     recompute_task_completion(db, task)
