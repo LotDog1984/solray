@@ -38,6 +38,7 @@ x-app-env: &app-env
   JWT_SECRET: change-this-to-a-longer-random-secret         # <<< EDIT (2) login-token signing secret (long random string)
   CORS_ORIGINS: http://192.168.1.50:9998                    # <<< EDIT (3) the EXACT URL you open the app in the browser (http://IP-or-domain:PORT)
   NTFY_BASE_URL: http://192.168.1.50:8082                   # <<< EDIT (4) same host as (3), port 8082 (phone notifications)
+  NTFY_PUBLIC_URL: https://ntfy.example.com                 # <<< EDIT (5) public https ntfy address for the MOBILE APP (your nginx domain)
 # ------------------------------------------------------------------------------
 
 services:

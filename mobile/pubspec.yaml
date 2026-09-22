@@ -1,0 +1,20 @@
+name: solray
+description: SolRay mobile client — connects to any SolRay instance by URL.
+publish_to: "none"
+version: 1.5.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.2
+  shared_preferences: ^2.3.2
+  web_socket_channel: ^3.0.1
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

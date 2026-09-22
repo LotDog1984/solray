@@ -25,6 +25,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set in .env}
       STORAGE_DIR: /data/uploads
       NTFY_URL: http://ntfy:80
+      # Public ntfy address for mobile clients (set when exposed via a domain)
+      NTFY_PUBLIC_URL: ${NTFY_PUBLIC_URL:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:9999}
     volumes:
       - uploads:/data/uploads

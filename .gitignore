@@ -59,3 +59,5 @@ deploy-script.sh
 
 # Python cache
 *.egg-info/
+dist/
+mobile/build/

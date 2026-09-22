@@ -1,0 +1,17 @@
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Android
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/*.jks
+android/app/*.keystore
+*.iml
+
+# Generated platform scaffolding that CI (flutter create) will regenerate.
+# Committed on purpose: gradle files, manifest, kotlin host — see README.

@@ -47,6 +47,9 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
 JWT_ALGORITHM = "HS256"
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "./uploads"))
 NTFY_URL = os.getenv("NTFY_URL", "").rstrip("/")
+# Public address of this instance's ntfy (e.g. https://ntfy.example.com) — served
+# via GET /api/settings so mobile clients can subscribe without baked-in domains.
+NTFY_PUBLIC_URL = os.getenv("NTFY_PUBLIC_URL", "").rstrip("/")
 CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:8080").split(",")]
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -250,6 +253,9 @@ DEFAULT_COLUMNS = ["Backlog", "U tijeku", "Gotovo"]
 class SettingsOut(BaseModel):
     app_name: str = DEFAULT_APP_NAME
     default_columns: list[str] = DEFAULT_COLUMNS
+    # Mobile clients read this to open the notification WebSocket; empty = not configured.
+    # FROZEN CONTRACT: fields may only be added (optional), never renamed/removed.
+    ntfy_base_url: str = ""
 
 
 class SettingsIn(BaseModel):
@@ -462,6 +468,7 @@ def read_settings(db: Db):
     return SettingsOut(
         app_name=get_setting(db, APP_NAME_KEY) or DEFAULT_APP_NAME,
         default_columns=get_default_columns(db),
+        ntfy_base_url=NTFY_PUBLIC_URL,
     )
 
 

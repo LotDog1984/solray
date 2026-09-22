@@ -1,0 +1,101 @@
+name: Build Android APK
+
+# Builds the SolRay mobile app on every version tag (and manually from the
+# Actions tab) and attaches the signed APK to the GitHub Release — the same
+# "one tag ships everything" flow as the Docker images.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # needed to create the release / upload the APK asset
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: ver
+        run: echo "version=$(head -1 VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Sync app version from VERSION
+        working-directory: mobile
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          sed -i "s/^version: .*/version: ${V}+1/" pubspec.yaml
+
+      - name: Generate missing android platform files (idempotent)
+        working-directory: mobile
+        run: flutter create --platforms=android --org hr.mediahost --project-name solray .
+
+      - name: Pub get
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: mobile
+        run: flutter analyze
+
+      - name: Prepare signing key (secrets, or generate a build key)
+        working-directory: mobile/android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > app/solray-release.jks
+            cat > key.properties <<EOF
+          storeFile=app/solray-release.jks
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+          else
+            # No secrets configured yet: generate a key so the build still works.
+            # Replace with real secrets before shipping to the Play Store.
+            keytool -genkeypair -v -keystore app/solray-release.jks -keyalg RSA -keysize 2048 \
+              -validity 10000 -alias solray -storepass solray123 -keypass solray123 \
+              -dname "CN=SolRay, OU=Dev, O=SolRay, L=Zagreb, C=HR"
+            cat > key.properties <<EOF
+          storeFile=app/solray-release.jks
+          storePassword=solray123
+          keyAlias=solray
+          keyPassword=solray123
+          EOF
+          fi
+
+      - name: Build release APK
+        working-directory: mobile
+        run: flutter build apk --release
+
+      - name: Rename APK
+        run: |
+          mkdir -p dist
+          cp mobile/build/app/outputs/flutter-apk/app-release.apk "dist/solray-${{ steps.ver.outputs.version }}.apk"
+
+      - name: Attach APK to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/solray-*.apk
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+        # For workflow_dispatch (no tag) this creates a "v<version>" release
