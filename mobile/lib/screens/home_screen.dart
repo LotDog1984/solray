@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../api.dart';
+import '../services/notifications.dart';
 import '../theme.dart';
+import 'board_screen.dart';
 import 'files_screen.dart';
 import 'login_screen.dart';
 import 'notifications_screen.dart';
@@ -17,10 +19,11 @@ import 'settings_screen.dart';
 /// Projekti (layered: projects → boards → kanban), Pretraga,
 /// Datoteke (per project) and Obavijesti with badge.
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, required this.api, this.session});
+  const HomeScreen({super.key, required this.api, this.session, this.launchPayload});
 
   final Api api;
   final Session? session;
+  final String? launchPayload; // notification tapped while app was closed
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -40,6 +43,42 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _boot();
+    Notifications.setTapHandler(_onNotificationTap);
+    if (widget.launchPayload != null) {
+      // Cold start from a notification tap — open after boot.
+      final payload = widget.launchPayload!;
+      Future<void>.delayed(const Duration(milliseconds: 600), () => _onNotificationTap(payload));
+    }
+  }
+
+  /// Ask for the Android notification permission shortly after first login
+  /// (system dialog; can be re-enabled later in Postavke or system settings).
+  Future<void> _maybeAskPermission() async {
+    try {
+      if (await Notifications.askedOnce()) return;
+      final granted = await Notifications.requestPermission();
+      if (!granted) {
+        // Store the preference anyway; Postavke shows how to re-enable.
+      }
+    } catch (_) {
+      // permission flow is best-effort
+    }
+  }
+
+  void _onNotificationTap(String? payload) {
+    // payload format "boardId:boardName" when available; otherwise open Obavijesti.
+    if (payload != null && payload.contains(':')) {
+      final idx = payload.indexOf(':');
+      final id = int.tryParse(payload.substring(0, idx));
+      final name = payload.substring(idx + 1);
+      if (id != null) {
+        Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => BoardScreen(api: widget.api, boardId: id, boardName: name, projects: _projects),
+        ));
+        return;
+      }
+    }
+    if (mounted) setState(() => _tab = 3); // Obavijesti
   }
 
   Future<void> _boot() async {
@@ -57,6 +96,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await _refresh();
       await _refreshUnread();
       _connectNotifications();
+      await _maybeAskPermission();
       _unreadPoll = Timer.periodic(const Duration(seconds: 30), (_) => _refreshUnread());
     } catch (e) {
       setState(() {
@@ -98,14 +138,20 @@ class _HomeScreenState extends State<HomeScreen> {
     _socket = socket;
     socket.stream.listen(
       (data) {
-        // ntfy publishes message envelopes as JSON — any event bumps the badge
-        // and refreshes; screens refresh themselves when resumed.
+        // ntfy message envelope: JSON with title/message — post a system
+        // notification and bump the badge. Keepalives are plain text.
+        String? title, body;
         try {
-          jsonDecode(data as String);
+          final d = jsonDecode(data as String);
+          if (d is Map) {
+            title = (d['title'] as String?) ?? 'SolRay';
+            body = (d['message'] as String?) ?? '';
+          }
         } catch (_) {
           return; // keepalives etc.
         }
         _refreshUnread();
+        Notifications.show(title: title ?? 'SolRay', body: body ?? '');
       },
       onError: (_) {},
       onDone: () {},

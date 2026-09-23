@@ -1,6 +1,8 @@
+import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../services/notifications.dart';
 import '../theme.dart';
 import 'login_screen.dart';
 import 'onboarding_screen.dart';
@@ -25,6 +27,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   List<Map<String, dynamic>> _users = [];
   String? _error;
+  bool _notifOn = false;
+  bool _notifPerm = true;
 
   late final TextEditingController _topic =
       TextEditingController(text: me['ntfy_topic'] as String? ?? '');
@@ -38,6 +42,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     if (isAdmin) _loadUsers();
+    _loadNotifState();
+  }
+
+  Future<void> _loadNotifState() async {
+    final perm = await Notifications.isEnabled();
+    final wants = await Notifications.userWants();
+    if (mounted) {
+      setState(() {
+        _notifPerm = perm;
+        _notifOn = perm && wants;
+      });
+    }
+  }
+
+  Future<void> _toggleNotif(bool v) async {
+    if (v && !_notifPerm) {
+      // Turning on without the Android permission → ask for it now.
+      await Notifications.requestPermission();
+      final nowEnabled = await Notifications.isEnabled();
+      if (!nowEnabled) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Dozvola je odbijena — uključite je u sistemskim postavkama.')));
+        }
+        return; // switch stays off
+      }
+      await Notifications.setUserWants(true);
+      if (mounted) {
+        setState(() {
+          _notifPerm = true;
+          _notifOn = true;
+        });
+      }
+      return;
+    }
+    await Notifications.setUserWants(v);
+    if (mounted) setState(() => _notifOn = v);
   }
 
   Future<void> _loadUsers() async {
@@ -216,6 +257,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ],
         ),
+
+        _sectionTitle('Obavijesti na uređaju'),
+        Card(
+          child: SwitchListTile(
+            value: _notifOn,
+            onChanged: _toggleNotif,
+            activeColor: SR.accent,
+            title: const Text('Sistemske obavijesti'),
+            subtitle: Text(
+              _notifOn
+                  ? 'Push na zaključani ekran kad vas netko tagira'
+                  : (_notifPerm ? 'Isključeno' : 'Dozvola nije dodijeljena — uključite prekidač za upit'),
+              style: const TextStyle(color: SR.muted, fontSize: 12),
+            ),
+          ),
+        ),
+        if (!_notifPerm)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: OutlinedButton.icon(
+              onPressed: () => AppSettings.openAppSettings(type: AppSettingsType.notification),
+              icon: const Icon(Icons.open_in_new, size: 16),
+              label: const Text('Otvori sistemske postavke'),
+            ),
+          ),
 
         _sectionTitle('Obavijesti (ntfy)'),
         Card(

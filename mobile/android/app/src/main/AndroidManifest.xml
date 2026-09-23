@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- SolRay talks to the user's own instance over HTTP(S) -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- System notifications: makes the toggle in Android app settings
+         active and lets us request it at runtime (Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <application
         android:label="SolRay"
         android:name="${applicationName}"
