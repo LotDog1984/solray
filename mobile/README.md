@@ -5,7 +5,7 @@ on first run (onboarding) — nothing is baked into the binary.
 
 ## How it works
 
-- **Onboarding**: enter the instance URL (e.g. `https://app.mediahost.stream`) →
+- **Onboarding**: enter the instance URL (e.g. `https://solray.mediahost.stream`) →
   validated against the public `GET /api/settings` (shows the instance's app name)
 - **Login**: same accounts as the web app (JWT stored on the device)
 - **Projekti tab**: projects → boards → kanban columns with tasks, checklist
