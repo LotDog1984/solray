@@ -35,6 +35,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _error;
   List<Map<String, dynamic>> _projects = [];
   WebSocketChannel? _socket;
+  int _socketRetry = 0;
+  Timer? _reconnect;
   int _unread = 0;
   int _tab = 0; // 0 Projekti, 1 Pretraga, 2 Datoteke, 3 Obavijesti
   Timer? _unreadPoll;
@@ -134,28 +136,40 @@ class _HomeScreenState extends State<HomeScreen> {
     final s = _session;
     if (s == null) return;
     final socket = s.api.notificationSocket(s.ntfyBase, s.topic);
-    if (socket == null) return;
+    if (socket == null) return; // no public ntfy on server — badge polling still works
     _socket = socket;
     socket.stream.listen(
       (data) {
-        // ntfy message envelope: JSON with title/message — post a system
-        // notification and bump the badge. Keepalives are plain text.
+        // ntfy envelope: JSON events. Only real messages ('event' absent or
+        // 'message') become notifications; open/keepalive/error are ignored.
         String? title, body;
         try {
-          final d = jsonDecode(data as String);
-          if (d is Map) {
-            title = (d['title'] as String?) ?? 'SolRay';
-            body = (d['message'] as String?) ?? '';
-          }
+          final d = jsonDecode(data.toString());
+          if (d is! Map) return; // plain keepalive text
+          final event = d['event'] as String?;
+          if (event != null && event != 'message') return;
+          title = (d['title'] as String?) ?? 'SolRay';
+          body = (d['message'] as String?) ?? '';
+          if (event == null && body.isEmpty) return;
         } catch (_) {
           return; // keepalives etc.
         }
+        _socketRetry = 0; // healthy again
         _refreshUnread();
-        Notifications.show(title: title ?? 'SolRay', body: body ?? '');
+        Notifications.show(title: title, body: body);
       },
-      onError: (_) {},
-      onDone: () {},
+      onError: (_) => _scheduleReconnect(),
+      onDone: () => _scheduleReconnect(),
     );
+  }
+
+  /// Socket dropped (network change, server restart, sleep) — reconnect with
+  /// a growing delay (5s → 5 min) so notifications keep flowing while open.
+  void _scheduleReconnect() {
+    _socketRetry++;
+    final delaySec = (5 * (1 << (_socketRetry - 1))).clamp(5, 300);
+    _reconnect?.cancel();
+    _reconnect = Timer(Duration(seconds: delaySec), _connectNotifications);
   }
 
   void _forceLogin() {
@@ -169,6 +183,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _unreadPoll?.cancel();
+    _reconnect?.cancel();
     _socket?.sink.close();
     super.dispose();
   }

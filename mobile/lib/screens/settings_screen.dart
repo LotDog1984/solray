@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../api.dart';
 import '../services/notifications.dart';
@@ -37,6 +40,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _columns = TextEditingController(
       text: (widget.session.settings['default_columns'] as List<dynamic>? ?? [])
           .join(', '));
+  bool _checkingNtfy = false;
+  String? _ntfyCheck;
 
   @override
   void initState() {
@@ -109,6 +114,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
       widget.onChanged();
     } catch (e) {
       _toast(e);
+    }
+  }
+
+  /// Diagnose the SolRay→ntfy connection used for in-app notifications.
+  Future<void> _checkNtfyConnection() async {
+    final base = widget.session.ntfyBase;
+    final topic = me['ntfy_topic'] as String? ?? '';
+    setState(() {
+      _checkingNtfy = true;
+      _ntfyCheck = null;
+    });
+    if (base.isEmpty) {
+      setState(() {
+        _checkingNtfy = false;
+        _ntfyCheck = '⚠️ Server nije postavio javnu ntfy adresu. Admin: dodajte NTFY_PUBLIC_URL u backend okruženje (compose) i pokrenite stack ponovno.';
+      });
+      return;
+    }
+    if (topic.isEmpty) {
+      setState(() {
+        _checkingNtfy = false;
+        _ntfyCheck = '⚠️ Prvo spremite svoj ntfy topic.';
+      });
+      return;
+    }
+    WebSocketChannel? ch;
+    try {
+      final ws = base.replaceFirst(RegExp('^http'), 'ws');
+      ch = WebSocketChannel.connect(Uri.parse('$ws/$topic/ws'));
+      final msg = await ch.stream.first.timeout(const Duration(seconds: 8));
+      final d = jsonDecode(msg.toString());
+      if (d is Map && d['event'] == 'open') {
+        _ntfyCheck = '✅ Povezano ($base) — obavijesti dolaze dok je aplikacija otvorena ili u pozadini.';
+      } else {
+        _ntfyCheck = '⚠️ Neočekivani odgovor od ntfy-a.';
+      }
+      await ch.sink.close();
+    } catch (_) {
+      _ntfyCheck = '❌ Nema veze s $base. Provjerite NTFY_PUBLIC_URL i proxy (WebSocket mora biti dozvoljen).';
+      try {
+        await ch?.sink.close();
+      } catch (_) {}
+    }
+    if (mounted) {
+      setState(() => _checkingNtfy = false);
     }
   }
 
@@ -305,6 +355,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: _checkingNtfy ? null : _checkNtfyConnection,
+                  icon: const Icon(Icons.wifi_tethering),
+                  label: const Text('Provjeri vezu'),
+                ),
+                if (_ntfyCheck != null) ...[
+                  const SizedBox(height: 8),
+                  Text(_ntfyCheck!, style: Theme.of(context).textTheme.bodySmall),
+                ],
               ],
             ),
           ),

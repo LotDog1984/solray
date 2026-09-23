@@ -49,7 +49,11 @@ STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "./uploads"))
 NTFY_URL = os.getenv("NTFY_URL", "").rstrip("/")
 # Public address of this instance's ntfy (e.g. https://ntfy.example.com) — served
 # via GET /api/settings so mobile clients can subscribe without baked-in domains.
-NTFY_PUBLIC_URL = os.getenv("NTFY_PUBLIC_URL", "").rstrip("/")
+# Public ntfy URL handed to mobile clients for their WebSocket subscription.
+# Prefer NTFY_PUBLIC_URL (e.g. https://ntfy.example.com, reachable from
+# phones); fall back to NTFY_BASE_URL so stacks that only set the shared
+# var still expose *something* (LAN-only, works at home).
+NTFY_PUBLIC_URL = (os.getenv("NTFY_PUBLIC_URL") or os.getenv("NTFY_BASE_URL") or "").rstrip("/")
 CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:8080").split(",")]
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
