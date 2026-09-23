@@ -996,3 +996,98 @@ textarea {
     grid-auto-columns: minmax(260px, 86vw);
   }
 }
+
+/* ------------------- 1.7.0: Nabava / supplies To-Do list ------------------- */
+
+/* To-Do panel at the end of the kanban grid (dashed like the "new column" tile) */
+.todo-panel {
+  background: rgba(255, 255, 255, 0.03);
+  border-style: dashed;
+}
+
+.todo-panel-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--panel-deep);
+  border: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.todo-panel-row .todo-panel-text {
+  flex: 1;
+  word-break: break-word;
+}
+
+.todo-panel-row.is-done {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(52, 211, 153, 0.45);
+}
+
+.todo-panel-row.is-done .todo-panel-text {
+  color: #34d399;
+  text-decoration: line-through;
+}
+
+.todo-panel-row .todo-panel-del {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+/* Global Nabava view (aggregated rows from all boards) */
+.nabava-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.nabava-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--panel-deep);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.nabava-row .nabava-main {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+
+.nabava-row .nabava-title {
+  word-break: break-word;
+}
+
+.nabava-row.is-done {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(52, 211, 153, 0.45);
+}
+
+.nabava-row.is-done .nabava-title {
+  color: #34d399;
+  text-decoration: line-through;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #93c5fd;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+/* Nav buttons (Obavijesti / Nabava) stack under the project form */
+.sidebar .notif-btn {
+  margin-top: 8px;
+}

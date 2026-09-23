@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -7,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../api.dart';
+import '../services/sync.dart';
 import '../theme.dart';
 
 /// Datoteke for one project (web parity): upload, thumbnails, list/grid,
@@ -28,11 +30,23 @@ class _FilesScreenState extends State<FilesScreen> {
   bool _grid = false;
   String? _error;
   bool _busy = false;
+  void Function()? _syncCancel;
 
   @override
   void initState() {
     super.initState();
     _load();
+    // Real-time sync: someone uploaded from web/another device — reload
+    // silently; slow-poll tick keeps the list fresh if the socket is down.
+    _syncCancel = SyncBus.forApi(widget.api).listen('files:${widget.projectId}', (_) {
+      if (mounted) _load();
+    });
+  }
+
+  @override
+  void dispose() {
+    _syncCancel?.call();
+    super.dispose();
   }
 
   Future<void> _load() async {

@@ -1,4 +1,6 @@
+import asyncio
 import io
+import json
 import os
 import re
 import shutil
@@ -10,7 +12,7 @@ from typing import Annotated
 import base64
 
 import requests
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.security import OAuth2PasswordBearer
@@ -100,6 +102,9 @@ class Board(Base):
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     columns: Mapped[list["BoardColumn"]] = relationship(cascade="all, delete-orphan", order_by="BoardColumn.position")
+    todo_list: Mapped["TodoList | None"] = relationship(
+        cascade="all, delete-orphan", uselist=False, lazy="selectin"
+    )
 
 
 class BoardColumn(Base):
@@ -137,6 +142,31 @@ class TaskItem(Base):
     title: Mapped[str] = mapped_column(String(255))
     is_done: Mapped[bool] = mapped_column(Boolean, default=False)
     position: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class TodoList(Base):
+    """1.7.0: per-board supplies To-Do list (auto-created with every board,
+    like the default columns). The list itself is not named — the UI labels it
+    with the admin-configured default name (settings.default_todo_list), so
+    renaming the setting renames it on every board at once."""
+
+    __tablename__ = "todo_lists"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    board_id: Mapped[int] = mapped_column(ForeignKey("boards.id", ondelete="CASCADE"), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    entries: Mapped[list["TodoEntry"]] = relationship(cascade="all, delete-orphan", order_by="TodoEntry.position")
+
+
+class TodoEntry(Base):
+    __tablename__ = "todo_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    todo_list_id: Mapped[int] = mapped_column(ForeignKey("todo_lists.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(255))
+    is_done: Mapped[bool] = mapped_column(Boolean, default=False)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class StoredFile(Base):
@@ -244,6 +274,11 @@ class TaskMoveIn(BaseModel):
     position: int = 0
 
 
+class TodoEntryIn(BaseModel):
+    title: str
+    is_done: bool = False
+
+
 class NtfyIn(BaseModel):
     topic: str | None = None
 
@@ -252,11 +287,17 @@ DEFAULT_APP_NAME = "Private Workspace"
 APP_NAME_KEY = "app_name"
 DEFAULT_COLUMNS_KEY = "default_columns"
 DEFAULT_COLUMNS = ["Backlog", "U tijeku", "Gotovo"]
+# 1.7.0: label for the per-board supplies To-Do list and the global "Nabava" view.
+DEFAULT_TODO_LIST_KEY = "default_todo_list"
+DEFAULT_TODO_LIST_NAME = "Nabava"
 
 
 class SettingsOut(BaseModel):
     app_name: str = DEFAULT_APP_NAME
     default_columns: list[str] = DEFAULT_COLUMNS
+    # 1.7.0: name of the automatic supplies To-Do list created on every board
+    # and used as the title of the aggregated Nabava view.
+    default_todo_list: str = DEFAULT_TODO_LIST_NAME
     # Mobile clients read this to open the notification WebSocket; empty = not configured.
     # FROZEN CONTRACT: fields may only be added (optional), never renamed/removed.
     ntfy_base_url: str = ""
@@ -265,6 +306,7 @@ class SettingsOut(BaseModel):
 class SettingsIn(BaseModel):
     app_name: str
     default_columns: list[str] | None = None
+    default_todo_list: str | None = None
 
 
 def get_default_columns(db: Session) -> list[str]:
@@ -273,6 +315,13 @@ def get_default_columns(db: Session) -> list[str]:
         return list(DEFAULT_COLUMNS)
     names = [line.strip() for line in raw.splitlines() if line.strip()]
     return names or list(DEFAULT_COLUMNS)
+
+
+def get_default_todo_list_name(db: Session) -> str:
+    raw = get_setting(db, DEFAULT_TODO_LIST_KEY)
+    if raw and raw.strip():
+        return raw.strip()[:80]
+    return DEFAULT_TODO_LIST_NAME
 
 
 def db_session():
@@ -421,8 +470,93 @@ app.add_middleware(
 )
 
 
+# --------------------------- real-time sync hub ----------------------------
+# 1.8.0: mutating endpoints broadcast lightweight "something changed" events
+# over a WebSocket so open clients (mobile app, later the web app) reload the
+# affected screen without any manual refresh. Events carry NO data — clients
+# re-fetch through the normal REST API, so permissions stay untouched.
+
+
+class ConnectionManager:
+    """In-process set of live sync WebSockets. Safe: uvicorn runs a single
+    worker, and broadcasts are scheduled onto the event loop from the sync
+    route handlers via notify_change()."""
+
+    def __init__(self) -> None:
+        self._clients: set[WebSocket] = set()
+        self._lock = asyncio.Lock()
+
+    async def connect(self, ws: WebSocket) -> None:
+        await ws.accept()
+        async with self._lock:
+            self._clients.add(ws)
+
+    def disconnect(self, ws: WebSocket) -> None:
+        self._clients.discard(ws)
+
+    @property
+    def count(self) -> int:
+        return len(self._clients)
+
+    async def broadcast(self, event: str, board_id: int | None = None) -> None:
+        payload = json.dumps(
+            {"type": event, "board_id": board_id, "ts": datetime.now(timezone.utc).isoformat()}
+        )
+        async with self._lock:
+            targets = list(self._clients)
+        for ws in targets:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                self.disconnect(ws)
+
+
+manager = ConnectionManager()
+LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def notify_change(event: str, board_id: int | None = None) -> None:
+    """Fire-and-forget broadcast request from SYNC route handlers (FastAPI runs
+    them in a worker thread; the hub lives on the event loop)."""
+    if manager.count == 0 or LOOP is None:
+        return  # nobody is listening — don't even schedule a task
+
+    def _schedule() -> None:
+        if LOOP is not None:
+            LOOP.create_task(manager.broadcast(event, board_id))
+
+    try:
+        LOOP.call_soon_threadsafe(_schedule)
+    except RuntimeError:
+        pass  # event loop gone during shutdown
+
+
+@app.websocket("/api/ws")
+async def sync_ws(ws: WebSocket, token: str = Query("")):
+    """Real-time sync stream (auth via ?token=JWT, like image thumbnails —
+    browser/mobile WS APIs cannot send Authorization headers)."""
+    try:
+        payload = jwt.decode(token or "", JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        int(payload["sub"])
+    except (JWTError, KeyError, ValueError):
+        await ws.close(code=4401)
+        return
+    await manager.connect(ws)
+    try:
+        while True:
+            # Clients keep the socket open and may send pings; incoming text
+            # is deliberately ignored — the server is the only broadcaster.
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(ws)
+    except Exception:
+        manager.disconnect(ws)
+
+
 @app.on_event("startup")
 def startup() -> None:
+    global LOOP
+    LOOP = asyncio.get_running_loop()
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     # Migration: boards.project_id was added later; ensure the column exists on
@@ -450,6 +584,19 @@ def startup() -> None:
                 Board.__table__.update().where(Board.project_id.is_(None)).values(project_id=project.id)
             )
             db.commit()
+        # 1.7.0: every existing board gets its supplies To-Do list too
+        boards_needing_todo = (
+            db.execute(
+                select(Board.id)
+                .outerjoin(TodoList, TodoList.board_id == Board.id)
+                .where(TodoList.id.is_(None))
+            )
+            .scalars()
+            .all()
+        )
+        if boards_needing_todo:
+            db.add_all(TodoList(board_id=board_id) for board_id in boards_needing_todo)
+            db.commit()
     finally:
         db.close()
 
@@ -472,6 +619,7 @@ def read_settings(db: Db):
     return SettingsOut(
         app_name=get_setting(db, APP_NAME_KEY) or DEFAULT_APP_NAME,
         default_columns=get_default_columns(db),
+        default_todo_list=get_default_todo_list_name(db),
         ntfy_base_url=NTFY_PUBLIC_URL,
     )
 
@@ -514,10 +662,21 @@ def update_settings(payload: SettingsIn, db: Db, user: CurrentUser):
         else:
             db.add(Setting(key=DEFAULT_COLUMNS_KEY, value=value))
 
+    if payload.default_todo_list is not None:
+        todo_name = payload.default_todo_list.strip()[:80]
+        if not todo_name:
+            raise HTTPException(status_code=400, detail="Naziv popisa ne može biti prazan")
+        todo_row = db.get(Setting, DEFAULT_TODO_LIST_KEY)
+        if todo_row:
+            todo_row.value = todo_name
+        else:
+            db.add(Setting(key=DEFAULT_TODO_LIST_KEY, value=todo_name))
+
     db.commit()
     return SettingsOut(
         app_name=name,
         default_columns=get_default_columns(db),
+        default_todo_list=get_default_todo_list_name(db),
     )
 
 
@@ -659,6 +818,7 @@ def create_project(payload: ProjectIn, db: Db, user: CurrentUser):
     db.commit()
     db.refresh(project)
     project_upload_dir(db, project.id)  # create the per-project uploads folder right away
+    notify_change("projects")
     return {"id": project.id, "name": project.name}
 
 
@@ -687,6 +847,7 @@ def rename_project(project_id: int, payload: ProjectIn, db: Db, user: CurrentUse
             db.commit()
         except OSError:
             pass  # files stay readable at the old path; nothing breaks
+    notify_change("projects")
     return {"id": project.id, "name": project.name}
 
 
@@ -704,6 +865,7 @@ def delete_project(project_id: int, db: Db, user: CurrentUser):
     )
     db.delete(project)
     db.commit()
+    notify_change("projects")
     return {"ok": True}
 
 
@@ -729,7 +891,11 @@ def create_board(payload: BoardIn, db: Db, user: CurrentUser):
         BoardColumn(board_id=board.id, name=name, position=position)
         for position, name in enumerate(get_default_columns(db))
     )
+    # 1.7.0: every new board gets its supplies To-Do list, just like the
+    # default columns come from settings.
+    db.add(TodoList(board_id=board.id))
     db.commit()
+    notify_change("projects")
     return {"id": board.id, "name": board.name, "project_id": board.project_id}
 
 
@@ -828,9 +994,26 @@ def search_everything(db: Db, user: CurrentUser, q: str = ""):
     return {"results": results}
 
 
+def serialize_todo_entries(entries: list[TodoEntry]) -> list[dict]:
+    """Ordered entries with an index stable for UI updates."""
+    ordered = sorted(entries, key=lambda e: e.position)
+    return [
+        {"id": e.id, "title": e.title, "is_done": e.is_done, "position": e.position, "index": idx}
+        for idx, e in enumerate(ordered)
+    ]
+
+
 @app.get("/api/boards/{board_id}")
 def get_board(board_id: int, db: Db, user: CurrentUser):
     board = ensure_board_access(db, user, board_id)
+    todo_entries: list[dict] = []
+    if board.todo_list is None:
+        # Boards created before 1.7.0 (or a deleted list): repair on the fly.
+        board.todo_list = TodoList(board_id=board.id)
+        db.add(board.todo_list)
+        db.commit()
+        db.refresh(board.todo_list)
+    todo_entries = serialize_todo_entries(board.todo_list.entries)
     return {
         "id": board.id,
         "name": board.name,
@@ -846,6 +1029,10 @@ def get_board(board_id: int, db: Db, user: CurrentUser):
             }
             for col in board.columns
         ],
+        "todo_list": {
+            "id": board.todo_list.id,
+            "entries": todo_entries,
+        },
     }
 
 
@@ -862,6 +1049,7 @@ def update_board(board_id: int, payload: BoardIn, db: Db, user: CurrentUser):
         ensure_project_manage(db, user, project)
         board.project_id = project.id
     db.commit()
+    notify_change("projects")
     return {"id": board.id, "name": board.name, "project_id": board.project_id}
 
 
@@ -872,6 +1060,7 @@ def delete_board(board_id: int, db: Db, user: CurrentUser):
         raise HTTPException(status_code=404, detail="Ploča ne postoji")
     db.delete(board)
     db.commit()
+    notify_change("projects")
     return {"ok": True}
 
 
@@ -890,6 +1079,7 @@ def create_column(payload: ColumnIn, db: Db, user: CurrentUser):
     db.add(column)
     db.commit()
     db.refresh(column)
+    notify_change("board", payload.board_id)
     return {"id": column.id, "name": column.name, "position": column.position}
 
 
@@ -909,6 +1099,7 @@ def rename_column(column_id: int, payload: ColumnPatchIn, db: Db, user: CurrentU
         raise HTTPException(status_code=400, detail="Naziv ne može biti prazan")
     column.name = name[:80]
     db.commit()
+    notify_change("board", column.board_id)
     return {"id": column.id, "name": column.name, "position": column.position}
 
 
@@ -921,6 +1112,8 @@ def delete_column(column_id: int, db: Db, user: CurrentUser):
     ensure_board_access(db, user, column.board_id)
     db.delete(column)
     db.commit()
+    notify_change("board", column.board_id)
+    notify_change("projects")
     return {"ok": True}
 
 
@@ -994,6 +1187,7 @@ def create_task(payload: TaskIn, db: Db, user: CurrentUser):
     notify_task_users(db, user, task)
     db.commit()
     db.refresh(task)
+    notify_change("board", board_id)
     return {"id": task.id}
 
 
@@ -1031,6 +1225,7 @@ def update_task(task_id: int, payload: TaskIn, db: Db, user: CurrentUser):
     recompute_task_completion(db, task)
     notify_task_users(db, user, task)
     db.commit()
+    notify_change("board", task_board_id(db, task.column_id))
     return {"ok": True}
 
 
@@ -1047,6 +1242,7 @@ def toggle_completed(task_id: int, db: Db, user: CurrentUser):
     task.completed = not task.completed
     task.completed_at = datetime.now(timezone.utc) if task.completed else None
     db.commit()
+    notify_change("board", task_board_id(db, task.column_id))
     return {"ok": True, "completed": task.completed}
 
 
@@ -1067,6 +1263,7 @@ def add_task_item(task_id: int, payload: TaskItemIn, db: Db, user: CurrentUser):
     was_completed = task.completed
     recompute_task_completion(db, task)
     db.commit()
+    notify_change("board", task_board_id(db, task.column_id))
     return {"id": item.id, "completed_changed": task.completed != was_completed}
 
 
@@ -1088,6 +1285,7 @@ def update_task_item(task_id: int, item_id: int, payload: TaskItemIn, db: Db, us
         item.position = payload.position
     recompute_task_completion(db, task)
     db.commit()
+    notify_change("board", task_board_id(db, task.column_id))
     return {"ok": True, "completed": task.completed, "completed_changed": task.completed != was_completed}
 
 
@@ -1105,6 +1303,7 @@ def delete_task_item(task_id: int, item_id: int, db: Db, user: CurrentUser):
     was_completed = task.completed
     recompute_task_completion(db, task)
     db.commit()
+    notify_change("board", task_board_id(db, task.column_id))
     return {"ok": True, "completed": task.completed, "completed_changed": task.completed != was_completed}
 
 
@@ -1118,6 +1317,7 @@ def move_task(task_id: int, payload: TaskMoveIn, db: Db, user: CurrentUser):
     task.column_id = payload.column_id
     task.position = payload.position
     db.commit()
+    notify_change("board", task_board_id(db, payload.column_id))
     return {"ok": True}
 
 
@@ -1129,6 +1329,103 @@ def delete_task(task_id: int, db: Db, user: CurrentUser):
     ensure_board_access(db, user, task_board_id(db, task.column_id))
     db.delete(task)
     db.commit()
+    notify_change("board", task_board_id(db, task.column_id))
+    return {"ok": True}
+
+
+# ----------------------------- supplies to-do ------------------------------
+# 1.7.0: every board has an automatic To-Do list ("Nabava") for missing
+# supplies. The global Nabava view aggregates entries from ALL boards, and
+# every entry carries the project + board it came from.
+
+
+def ensure_todo_list(db: Session, board: Board) -> TodoList:
+    """Get or lazily create a board's supplies To-Do list."""
+    todo = board.todo_list
+    if todo is None:
+        todo = TodoList(board_id=board.id)
+        db.add(todo)
+        db.flush()
+        db.refresh(todo)
+    return todo
+
+
+def serialize_nabava_row(entry: TodoEntry, todo: TodoList, board: Board, project: Project | None) -> dict:
+    """One aggregated Nabava row — origin info lets the user see which project
+    and board a Stavka belongs to."""
+    return {
+        "id": entry.id,
+        "todo_list_id": todo.id,
+        "board_id": board.id,
+        "board_name": board.name,
+        "project_id": project.id if project else None,
+        "project_name": project.name if project else "",
+        "title": entry.title,
+        "is_done": entry.is_done,
+        "position": entry.position,
+        "created_at": entry.created_at.isoformat() if entry.created_at else None,
+    }
+
+
+@app.get("/api/nabava")
+def get_nabava(db: Db, user: CurrentUser):
+    """All Stavke from every board's To-Do list in one list — open first
+    (oldest first), done at the bottom (newest completion first)."""
+    rows = db.execute(
+        select(TodoEntry, TodoList, Board, Project)
+        .join(TodoList, TodoEntry.todo_list_id == TodoList.id)
+        .join(Board, TodoList.board_id == Board.id)
+        .outerjoin(Project, Board.project_id == Project.id)
+        .order_by(TodoEntry.is_done, TodoEntry.created_at)
+    ).all()
+    return {"name": get_default_todo_list_name(db), "entries": [serialize_nabava_row(*row) for row in rows]}
+
+
+@app.post("/api/boards/{board_id}/todo")
+def add_todo_entry(board_id: int, payload: TodoEntryIn, db: Db, user: CurrentUser):
+    board = ensure_board_access(db, user, board_id)
+    todo = ensure_todo_list(db, board)
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Stavka ne smije biti prazna")
+    position = db.scalar(select(func.max(TodoEntry.position)).where(TodoEntry.todo_list_id == todo.id)) or 0
+    entry = TodoEntry(todo_list_id=todo.id, title=title[:255], is_done=False, position=position + 1)
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    notify_change("board", board_id)
+    notify_change("nabava")
+    return {"id": entry.id, "title": entry.title, "is_done": entry.is_done, "position": entry.position}
+
+
+@app.patch("/api/boards/{board_id}/todo/{entry_id}")
+def update_todo_entry(board_id: int, entry_id: int, payload: TodoEntryIn, db: Db, user: CurrentUser):
+    board = ensure_board_access(db, user, board_id)
+    todo = ensure_todo_list(db, board)
+    entry = db.get(TodoEntry, entry_id)
+    if not entry or entry.todo_list_id != todo.id:
+        raise HTTPException(status_code=404, detail="Stavka ne postoji")
+    title = payload.title.strip()
+    if title:
+        entry.title = title[:255]
+    entry.is_done = payload.is_done
+    db.commit()
+    notify_change("board", board_id)
+    notify_change("nabava")
+    return {"ok": True}
+
+
+@app.delete("/api/boards/{board_id}/todo/{entry_id}")
+def delete_todo_entry(board_id: int, entry_id: int, db: Db, user: CurrentUser):
+    board = ensure_board_access(db, user, board_id)
+    todo = ensure_todo_list(db, board)
+    entry = db.get(TodoEntry, entry_id)
+    if not entry or entry.todo_list_id != todo.id:
+        raise HTTPException(status_code=404, detail="Stavka ne postoji")
+    db.delete(entry)
+    db.commit()
+    notify_change("board", board_id)
+    notify_change("nabava")
     return {"ok": True}
 
 
@@ -1214,6 +1511,8 @@ def store_upload(db: Session, user: User, file: UploadFile, project_id: int | No
     db.refresh(row)
     if thumb_bytes is not None:
         thumbnail_path(target).write_bytes(thumb_bytes)
+    if project_id:
+        notify_change("files", project_id)
     return {"id": row.id, "name": row.original_name}
 
 

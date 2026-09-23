@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../services/sync.dart';
 import '../theme.dart';
 import 'search_screen.dart';
 import 'task_dialog.dart';
@@ -28,26 +31,55 @@ class BoardScreen extends StatefulWidget {
 
 class _BoardScreenState extends State<BoardScreen> {
   Map<String, dynamic>? _board;
+  Map<String, dynamic>? _settings; // for the To-Do list name
   bool _loading = true;
   String? _error;
+  void Function()? _syncCancel;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _subscribeSync();
   }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
+  /// Real-time sync: reload automatically when this board changes anywhere
+  /// (web, another phone). While the socket is down the bus ticks every 20 s
+  /// so the board still refreshes (slow-poll fallback). Reloads skip the
+  /// spinner (silent refresh) so a remote change never blanks the screen.
+  void _subscribeSync() {
+    final bus = SyncBus.forApi(widget.api);
+    _syncCancel = bus.listen('board:${widget.boardId}', (_) {
+      if (mounted) _load(silent: true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _syncCancel?.call();
+    super.dispose();
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) setState(() => _loading = true);
     try {
       final b = await widget.api.get('/api/boards/${widget.boardId}') as Map<String, dynamic>;
+      Map<String, dynamic>? settings;
+      try {
+        settings = await widget.api.settings();
+      } catch (_) {
+        // cosmetic only — fall back to the default name
+      }
+      if (!mounted) return;
       setState(() {
         _board = b;
+        _settings = settings;
         _loading = false;
       });
     } on AuthExpired {
       if (mounted) _popExpired();
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString().replaceFirst('Exception: ', '');
         _loading = false;
@@ -306,6 +338,62 @@ class _BoardScreenState extends State<BoardScreen> {
     }
   }
 
+  // ---- supplies To-Do list ("Nabava") --------------------------------------
+  // Every board has an automatic To-Do list; its entries are aggregated in the
+  // global Nabava tab (and the web app's Nabava view), each carrying the
+  // project + board it came from.
+
+  List<Map<String, dynamic>> get _todoEntries => List<Map<String, dynamic>>.from(
+      ((_board?['todo_list'] as Map<String, dynamic>? )?['entries'] as List<dynamic>? ?? [])
+          .map((e) => Map<String, dynamic>.from(e as Map)));
+
+  Future<void> _addTodo() async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: SR.panel,
+        title: const Text('Nova stavka za nabavu'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'npr. Vijci 6x60 (fali 50 kom)'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Odustani')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Dodaj')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await widget.api.post('/api/boards/${widget.boardId}/todo', {'title': ctrl.text.trim()});
+      await _load();
+    } catch (e) {
+      _showError(e);
+    }
+  }
+
+  Future<void> _toggleTodo(Map<String, dynamic> e) async {
+    final next = !(e['is_done'] as bool? ?? false);
+    try {
+      await widget.api.patch('/api/boards/${widget.boardId}/todo/${e['id']}',
+          {'title': e['title'], 'is_done': next});
+      await _load();
+    } catch (err) {
+      _showError(err);
+    }
+  }
+
+  Future<void> _deleteTodo(Map<String, dynamic> e) async {
+    try {
+      await widget.api.delete('/api/boards/${widget.boardId}/todo/${e['id']}');
+      await _load();
+    } catch (err) {
+      _showError(err);
+    }
+  }
+
   // ---- build ---------------------------------------------------------------
 
   @override
@@ -377,6 +465,15 @@ class _BoardScreenState extends State<BoardScreen> {
                           onRenameColumn: _renameColumn,
                           onDeleteColumn: _deleteColumn,
                         ),
+                      // Supplies To-Do panel ("Nabava") — same list the web app
+                      // shows and the global Nabava view aggregates.
+                      _TodoPanel(
+                        name: (_settings?['default_todo_list'] as String?) ?? 'Nabava',
+                        entries: _todoEntries,
+                        onAdd: _addTodo,
+                        onToggle: _toggleTodo,
+                        onDelete: _deleteTodo,
+                      ),
                       if (columns.isEmpty)
                         const Center(
                           child: Padding(
@@ -490,6 +587,123 @@ class _ColumnView extends StatelessWidget {
             onPressed: () => onNewTask(raw),
             icon: const Icon(Icons.add, size: 16),
             label: const Text('Novi task', style: TextStyle(fontSize: 12)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Supplies To-Do panel — the per-board "Nabava" list shown as the last
+/// column of the kanban, matching the web app's dashed panel.
+class _TodoPanel extends StatelessWidget {
+  const _TodoPanel({
+    required this.name,
+    required this.entries,
+    required this.onAdd,
+    required this.onToggle,
+    required this.onDelete,
+  });
+
+  final String name;
+  final List<Map<String, dynamic>> entries;
+  final Future<void> Function() onAdd;
+  final Future<void> Function(Map<String, dynamic>) onToggle;
+  final Future<void> Function(Map<String, dynamic>) onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 290,
+      margin: const EdgeInsets.only(right: 12),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0x14FFFFFF), // subtle tint like the web's dashed panel
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: SR.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text('✅ $name (${entries.length})',
+                    style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Expanded(
+            child: ListView(
+              children: [
+                for (final e in entries)
+                  _TodoRow(entry: e, onToggle: onToggle, onDelete: onDelete),
+                if (entries.isEmpty)
+                  const Text(
+                    'Nema stavki — dodajte prvu ispod.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: SR.muted, fontSize: 12),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 4),
+          OutlinedButton.icon(
+            onPressed: onAdd,
+            icon: const Icon(Icons.add, size: 16),
+            label: const Text('Dodaj stavku', style: TextStyle(fontSize: 12)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TodoRow extends StatelessWidget {
+  const _TodoRow({required this.entry, required this.onToggle, required this.onDelete});
+
+  final Map<String, dynamic> entry;
+  final Future<void> Function(Map<String, dynamic>) onToggle;
+  final Future<void> Function(Map<String, dynamic>) onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final done = entry['is_done'] as bool? ?? false;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      decoration: BoxDecoration(
+        color: done ? const Color(0x1F22C55E) : SR.panelDeep,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: done ? SR.done : SR.line),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 30,
+            height: 30,
+            child: Checkbox(
+              value: done,
+              onChanged: (_) => onToggle(entry),
+              activeColor: SR.done,
+            ),
+          ),
+          Expanded(
+            child: Text(
+              entry['title'] as String? ?? '',
+              style: TextStyle(
+                fontSize: 13,
+                color: done ? SR.done : SR.text,
+                decoration: done ? TextDecoration.lineThrough : null,
+              ),
+            ),
+          ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Obriši stavku',
+            icon: const Icon(Icons.close, size: 16, color: Color(0xFFDC2626)),
+            onPressed: () => onDelete(entry),
           ),
         ],
       ),

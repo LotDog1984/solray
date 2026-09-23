@@ -44,6 +44,9 @@ const state = {
   notifications: [],
   appName: "Private Workspace",
   defaultColumns: [],
+  defaultTodoListName: "Nabava",
+  nabava: null,
+  nabavaLoading: false,
   dragTaskId: null,
   openTaskId: null,
   lastBoard: null,
@@ -111,6 +114,7 @@ async function loadAppName() {
     const settings = await api.json("/api/settings", "GET");
     state.appName = settings.app_name || "Private Workspace";
     state.defaultColumns = Array.isArray(settings.default_columns) ? settings.default_columns : [];
+    state.defaultTodoListName = settings.default_todo_list || "Nabava";
   } catch {
     state.appName = "Private Workspace";
   }
@@ -266,6 +270,18 @@ function goProjects() {
   renderView();
 }
 
+function goNabava() {
+  state.layer = "projects";
+  state.project = null;
+  state.board = null;
+  state.view = "nabava";
+  state.searchResults = null;
+  state.nabava = null;
+  renderSidebar();
+  renderView();
+  renderNabava();
+}
+
 function goBoards(projectId) {
   state.project = projectId;
   state.layer = "boards";
@@ -316,7 +332,8 @@ function renderSidebar() {
         <input name="name" placeholder="Novi projekt..." required />
         <button type="submit" title="Dodaj projekt">+</button>
       </form>
-      <button class="secondary notif-btn ${state.view === "notifications" ? "active" : ""}" id="navNotifications">Obavijesti${state.unreadCount ? `<span class="badge">${state.unreadCount > 99 ? "99+" : state.unreadCount}</span>` : ""}</button>`;
+      <button class="secondary notif-btn ${state.view === "notifications" ? "active" : ""}" id="navNotifications">Obavijesti${state.unreadCount ? `<span class="badge">${state.unreadCount > 99 ? "99+" : state.unreadCount}</span>` : ""}</button>
+      <button class="secondary notif-btn ${state.view === "nabava" ? "active" : ""}" id="navNabava">${escapeHtml(state.defaultTodoListName || "Nabava")}</button>`;
   } else {
     const project = currentProject();
     const rows = (project?.boards || [])
@@ -462,6 +479,9 @@ function bindSidebarEvents(sidebar) {
     };
   }
 
+  const nabavaBtn = sidebar.querySelector("#navNabava");
+  if (nabavaBtn) nabavaBtn.onclick = () => goNabava();
+
   const settingsBtn = sidebar.querySelector("#navSettings");
   if (settingsBtn) {
     settingsBtn.onclick = () => {
@@ -553,6 +573,11 @@ function renderView() {
     return;
   }
   if (state.layer !== "app") {
+    if (state.view === "nabava") {
+      content.innerHTML = '<div id="nabavaView"></div>';
+      renderNabava(); // Nabava is a main-page view, like Obavijesti
+      return;
+    }
     content.innerHTML = '<div id="notificationsView"></div>';
     renderNotifications(); // Obavijesti live on the main page
     return;
@@ -732,8 +757,22 @@ function renderKanban(board) {
     })
     .join("");
 
+  // Supplies To-Do panel ("Nabava"): one automatic list per board, aggregated
+  // into the global Nabava view (every Stavka shows its project + board there).
+  const todoEntries = board.todo_list?.entries || [];
+  const todoPanel = `
+    <div class="column todo-panel" id="boardTodoPanel" data-board-id="${board.id}">
+      <h2>✅ ${escapeHtml(state.defaultTodoListName || "Nabava")} <small style="color:var(--muted);">(${todoEntries.length})</small></h2>
+      <div class="tasks" id="boardTodoEntries">${renderTodoEntries(todoEntries)}</div>
+      <form id="boardTodoForm" style="margin-top:10px;display:grid;gap:6px;">
+        <input name="title" placeholder="Nova stavka (npr. nema više vijaka 6x60)..." required />
+        <button type="submit" class="secondary">Dodaj stavku</button>
+      </form>
+    </div>`;
+
   kanban.innerHTML =
     columnsHtml +
+    todoPanel +
     `
     <div class="column" style="background:transparent;border-style:dashed;">
       <form id="newColumnForm" style="display:grid;gap:8px;">
@@ -741,6 +780,8 @@ function renderKanban(board) {
         <button type="submit" class="secondary">Dodaj kolonu</button>
       </form>
     </div>`;
+
+  bindBoardTodoEvents(board);
 
   // Bind new task forms
   kanban.querySelectorAll(".new-task-form").forEach((form) => {
@@ -819,6 +860,64 @@ function renderKanban(board) {
         alert(error.message);
       }
     });
+  });
+}
+
+function renderTodoEntries(entries) {
+  if (!entries.length) return '<div class="muted" style="font-size:13px;">Nema stavki — dodajte prvu ispod.</div>';
+  return entries
+    .map(
+      (e) => `
+      <div class="todo-panel-row ${e.is_done ? "is-done" : ""}" data-entry-id="${e.id}">
+        <input type="checkbox" class="todo-panel-check" data-entry-id="${e.id}" ${e.is_done ? "checked" : ""} title="Označi kao nabavljeno" />
+        <span class="todo-panel-text">${escapeHtml(e.title)}</span>
+        <button type="button" class="danger todo-panel-del" data-entry-id="${e.id}" title="Obriši stavku">✕</button>
+      </div>`
+    )
+    .join("");
+}
+
+function bindBoardTodoEvents(board) {
+  const form = document.querySelector("#boardTodoForm");
+  if (form) {
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const title = new FormData(form).get("title");
+      try {
+        await api.json(`/api/boards/${board.id}/todo`, "POST", { title });
+        await loadBoard();
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+  }
+
+  document.querySelectorAll("#boardTodoEntries .todo-panel-check").forEach((check) => {
+    check.onchange = async () => {
+      const row = check.closest(".todo-panel-row");
+      const title = row.querySelector(".todo-panel-text").textContent;
+      try {
+        await api.json(`/api/boards/${board.id}/todo/${check.dataset.entryId}`, "PATCH", {
+          title,
+          is_done: check.checked,
+        });
+        await loadBoard();
+      } catch (error) {
+        check.checked = !check.checked;
+        alert(error.message);
+      }
+    };
+  });
+
+  document.querySelectorAll("#boardTodoEntries .todo-panel-del").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api.request(`/api/boards/${board.id}/todo/${btn.dataset.entryId}`, { method: "DELETE" });
+        await loadBoard();
+      } catch (error) {
+        alert(error.message);
+      }
+    };
   });
 }
 
@@ -1253,6 +1352,83 @@ async function renderNotifications() {
   }
 }
 
+/* ---------------------------------- nabava --------------------------------- */
+
+/* Global shopping list: every Stavka from every board's supplies To-Do list in
+   one place. Each row shows the project + board it came from (backend sends
+   project_name / board_name), and clicking the origin opens that board. */
+async function renderNabava() {
+  const view = document.querySelector("#nabavaView");
+  if (!view) return;
+  view.innerHTML = '<div class="panel">Učitavanje...</div>';
+  let data;
+  try {
+    data = await api.json("/api/nabava", "GET");
+  } catch (error) {
+    view.innerHTML = `<div class="panel">${escapeHtml(error.message)}</div>`;
+    return;
+  }
+  state.nabava = data;
+  const name = data.name || state.defaultTodoListName || "Nabava";
+  const openCount = data.entries.filter((e) => !e.is_done).length;
+  const rows = data.entries
+    .map(
+      (e) => `
+      <div class="nabava-row ${e.is_done ? "is-done" : ""}" data-entry-id="${e.id}">
+        <input type="checkbox" class="nabava-check" data-entry-id="${e.id}" data-board-id="${e.board_id}" ${e.is_done ? "checked" : ""} title="Označi kao nabavljeno" />
+        <div class="nabava-main">
+          <strong class="nabava-title">${escapeHtml(e.title)}</strong>
+          <button type="button" class="link-btn nabava-origin" data-board-id="${e.board_id}" title="Otvori ploču">📁 ${escapeHtml(e.project_name || "")} → ${escapeHtml(e.board_name || "")}</button>
+        </div>
+        <button type="button" class="danger nabava-del" data-entry-id="${e.id}" data-board-id="${e.board_id}" title="Obriši stavku">✕</button>
+      </div>`
+    )
+    .join("");
+  view.innerHTML = `<div class="files panel">
+    <div class="row" style="justify-content:space-between;align-items:center;">
+      <h2 style="margin:0;">🛒 ${escapeHtml(name)}</h2>
+      <small class="muted">${openCount ? `${openCount} za nabaviti` : "Sve nabavljeno 🎉"}</small>
+    </div>
+    <p class="muted" style="font-size:13px;margin:6px 0 0 0;">Zajednički popis svih stavki za nabavu iz svih ploča. Svaka stavka nosi projekt i ploču u kojoj je nastala.</p>
+    <div class="nabava-list">${rows || '<div class="muted">Nema stavki za nabavu. Dodajte ih u To-Do popisu na bilo kojoj ploči.</div>'}</div>
+  </div>`;
+
+  view.querySelectorAll(".nabava-check").forEach((check) => {
+    check.onchange = async () => {
+      const row = check.closest(".nabava-row");
+      const title = row.querySelector(".nabava-title").textContent;
+      try {
+        await api.json(`/api/boards/${check.dataset.boardId}/todo/${check.dataset.entryId}`, "PATCH", {
+          title,
+          is_done: check.checked,
+        });
+        await renderNabava();
+      } catch (error) {
+        check.checked = !check.checked;
+        alert(error.message);
+      }
+    };
+  });
+
+  view.querySelectorAll(".nabava-origin").forEach((btn) => {
+    btn.onclick = () => {
+      const boardId = Number(btn.dataset.boardId);
+      if (boardId) openBoard(boardId);
+    }; // openBoard also fixes state.project from allBoards()
+  });
+
+  view.querySelectorAll(".nabava-del").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api.request(`/api/boards/${btn.dataset.boardId}/todo/${btn.dataset.entryId}`, { method: "DELETE" });
+        await renderNabava();
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+  });
+}
+
 /* --------------------------------- settings -------------------------------- */
 
 async function renderSettings() {
@@ -1295,6 +1471,14 @@ async function renderSettings() {
         <button type="submit">Spremi kolone</button>
       </form>
       <p class="muted" style="font-size:13px;">Svaka nova ploča automatski dobije ove kolone (jedan naziv po retku, najviše 20).</p>
+    </div>
+    <div class="panel">
+      <h2 style="margin-top:0;">Naziv To-Do popisa za nabavu</h2>
+      <form id="defaultTodoListForm" class="row">
+        <input name="todo_name" placeholder="npr. Nabava" value="${escapeHtml(state.defaultTodoListName || "Nabava")}" maxlength="80" required />
+        <button type="submit">Spremi naziv</button>
+      </form>
+      <p class="muted" style="font-size:13px;">Ovaj naziv nosi To-Do popis na svakoj ploči i globalni gumb u lijevoj traci (trenutno: „${escapeHtml(state.defaultTodoListName || "Nabava")}"). Promjena vrijedi odmah za sve ploče.</p>
     </div>`
     : "";
 
@@ -1365,6 +1549,25 @@ async function renderSettings() {
         });
         state.defaultColumns = settings.default_columns;
         alert("Kolone spremljene. Nove ploče koristit će ove kolone.");
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+  }
+
+  const todoListForm = document.querySelector("#defaultTodoListForm");
+  if (todoListForm) {
+    todoListForm.onsubmit = async (event) => {
+      event.preventDefault();
+      const todoName = (new FormData(event.currentTarget).get("todo_name") || "").trim();
+      try {
+        const settings = await api.json("/api/settings", "PUT", {
+          app_name: state.appName || "Private Workspace",
+          default_todo_list: todoName,
+        });
+        state.defaultTodoListName = settings.default_todo_list;
+        alert("Naziv popisa spremljen. Vrijedi za sve ploče i globalni pregled.");
+        renderSettings();
       } catch (error) {
         alert(error.message);
       }

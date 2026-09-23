@@ -42,6 +42,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _columns = TextEditingController(
       text: (widget.session.settings['default_columns'] as List<dynamic>? ?? [])
           .join(', '));
+  late final TextEditingController _todoName = TextEditingController(
+      text: (widget.session.settings['default_todo_list'] as String?) ?? 'Nabava');
   bool _checkingNtfy = false;
   String? _ntfyCheck;
 
@@ -252,7 +254,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         for (final c in _columns.text.split(','))
           if (c.trim().isNotEmpty) c.trim(),
       ];
-      await api.put('/api/settings', {'app_name': _appName.text.trim(), 'default_columns': columns});
+      await api.put('/api/settings', {
+        'app_name': _appName.text.trim(),
+        'default_columns': columns,
+        'default_todo_list': _todoName.text.trim(),
+      });
       if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Postavke spremljene.')));
@@ -456,6 +462,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     decoration: const InputDecoration(
                       labelText: 'Zadane kolone (odvojene zarezom)',
                       hintText: 'Backlog, U tijeku, Gotovo',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _todoName,
+                    decoration: const InputDecoration(
+                      labelText: 'Naziv To-Do popisa za nabavu',
+                      hintText: 'Nabava',
                     ),
                   ),
                   const SizedBox(height: 10),

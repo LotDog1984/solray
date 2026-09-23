@@ -10,6 +10,11 @@ on first run (onboarding) — nothing is baked into the binary.
 - **Login**: same accounts as the web app (JWT stored on the device)
 - **Projekti tab**: projects → boards → kanban columns with tasks, checklist
   ticks (green), all-checked auto-completion, orange tint on tasks that mention you
+- **Nabava tab** (v1.7.0+4): global supplies To-Do aggregated from ALL boards —
+  every Stavka shows the 📁 Projekt → Ploča it came from (tap to open that
+  board); tick = bought, trash = delete. Each board's kanban also ends with a
+  ✅ To-Do panel for adding that board's missing supplies. Tab label and panel
+  title follow the admin setting `default_todo_list` (web: Postavke).
 - **Obavijesti tab**: in-app notification list with unread badge; unread count
   arrives live via the instance's ntfy WebSocket (`ntfy_base_url` from
   `/api/settings`, topic from the user's account) and a 30 s poll as backup

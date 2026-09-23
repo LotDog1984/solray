@@ -6,18 +6,21 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../api.dart';
 import '../services/notifications.dart';
+import '../services/sync.dart';
 import '../theme.dart';
 import 'board_screen.dart';
 import 'files_screen.dart';
 import 'login_screen.dart';
+import 'nabava_screen.dart';
 import 'notifications_screen.dart';
 import 'projects_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 
-/// Main screen after login — web parity in four tabs:
+/// Main screen after login — web parity in five tabs:
 /// Projekti (layered: projects → boards → kanban), Pretraga,
-/// Datoteke (per project) and Obavijesti with badge.
+/// Datoteke (per project), Obavijesti with badge and Nabava
+/// (global supplies To-Do aggregated over all boards).
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.api, this.session, this.launchPayload});
 
@@ -38,8 +41,9 @@ class _HomeScreenState extends State<HomeScreen> {
   int _socketRetry = 0;
   Timer? _reconnect;
   int _unread = 0;
-  int _tab = 0; // 0 Projekti, 1 Pretraga, 2 Datoteke, 3 Obavijesti
+  int _tab = 0; // 0 Projekti, 1 Pretraga, 2 Datoteke, 3 Obavijesti, 4 Nabava
   Timer? _unreadPoll;
+  int _projectsTick = 0; // bumps when sync says projects changed
 
   @override
   void initState() {
@@ -98,6 +102,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await _refresh();
       await _refreshUnread();
       _connectNotifications();
+      _connectSync();
       await _maybeAskPermission();
       _unreadPoll = Timer.periodic(const Duration(seconds: 30), (_) => _refreshUnread());
     } catch (e) {
@@ -172,6 +177,24 @@ class _HomeScreenState extends State<HomeScreen> {
     _reconnect = Timer(Duration(seconds: delaySec), _connectNotifications);
   }
 
+  /// Real-time sync: server pushes "something changed" events; the active
+  /// tab reloads without any manual pull-to-refresh. Nabava tab reloads its
+  /// own list; projects list refreshes on the projects layer. The sync bus
+  /// also ticks every 20 s while its socket is down (slow-poll fallback).
+  void _connectSync() {
+    final bus = SyncBus.forApi(widget.api); // shared per-server singleton
+    bus.listen('projects', (_) {
+      if (!mounted) return;
+      if (_tab == 0) _refresh();
+      if (_tab == 4) setState(() => _projectsTick++); // Nabava tab: reload via its own listener
+    });
+    bus.listen('nabava', (_) {
+      if (!mounted || _tab != 4) return;
+      setState(() => _projectsTick++); // rebuild → NabavaTab refetches in didUpdateWidget
+    });
+    // files events are handled inside FilesScreen (pushed route)
+  }
+
   void _forceLogin() {
     Api.clearSession();
     if (!mounted) return;
@@ -183,6 +206,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _unreadPoll?.cancel();
+    SyncBus.drop(widget.api.baseUrl); // leaving the app's main screen (logout/server change)
     _reconnect?.cancel();
     _socket?.sink.close();
     super.dispose();
@@ -211,13 +235,19 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
     final s = _session!;
+    final todoName = (s.settings['default_todo_list'] as String?) ?? 'Nabava';
     final screens = [
       ProjectsScreen(api: widget.api, projects: _projects, appName: s.appName),
       SearchScreen(api: widget.api),
       _FilesEntry(api: widget.api, projects: _projects),
       NotificationsScreen(api: widget.api, onOpened: _refreshUnread),
+      NabavaTab(
+        api: widget.api,
+        onChanged: _refreshUnread,
+        refreshSignal: _projectsTick,
+      ),
     ];
-    final titles = [s.appName, 'Pretraga', 'Datoteke', 'Obavijesti'];
+    final titles = [s.appName, 'Pretraga', 'Datoteke', 'Obavijesti', todoName];
 
     return Scaffold(
       backgroundColor: SR.bg,
@@ -236,10 +266,14 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: _tab == 0 ? _refresh : _refreshUnread,
-        child: screens[_tab],
-      ),
+      // Nabava tab owns its RefreshIndicator (pull reloads its entries);
+      // the others share the outer one.
+      body: _tab == 4
+          ? screens[_tab]
+          : RefreshIndicator(
+              onRefresh: _tab == 0 ? _refresh : _refreshUnread,
+              child: screens[_tab],
+            ),
       bottomNavigationBar: NavigationBar(
         backgroundColor: SR.sidebar,
         indicatorColor: SR.accentDark,
@@ -256,6 +290,10 @@ class _HomeScreenState extends State<HomeScreen> {
               child: const Icon(Icons.notifications_outlined),
             ),
             label: 'Obavijesti',
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.shopping_cart_outlined),
+            label: todoName,
           ),
         ],
       ),
