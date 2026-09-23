@@ -5,6 +5,8 @@
          active and lets us request it at runtime (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- In-app updates: hand downloaded APKs to Android's installer -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application
         android:label="SolRay"
         android:name="${applicationName}"

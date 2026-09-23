@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../api.dart';
 import '../services/notifications.dart';
+import '../services/updater.dart';
 import '../theme.dart';
 import 'login_screen.dart';
 import 'onboarding_screen.dart';
@@ -43,11 +45,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _checkingNtfy = false;
   String? _ntfyCheck;
 
+  // ---- Ažuriranja (in-app updater) ------------------------------------------
+  String _appVersion = '…';
+  bool _updChecking = false;
+  bool _updBusy = false;
+  double _updProgress = 0;
+  ReleaseInfo? _updRelease;
+  String? _updMessage;
+
   @override
   void initState() {
     super.initState();
     if (isAdmin) _loadUsers();
     _loadNotifState();
+    Updater.currentVersion().then((v) {
+      if (mounted) setState(() => _appVersion = v);
+    });
   }
 
   Future<void> _loadNotifState() async {
@@ -159,6 +172,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     if (mounted) {
       setState(() => _checkingNtfy = false);
+    }
+  }
+
+  /// GitHub Releases check — the same channel CI publishes APKs to.
+  Future<void> _checkForUpdates() async {
+    setState(() {
+      _updChecking = true;
+      _updMessage = null;
+      _updRelease = null;
+    });
+    final release = await Updater.latestRelease();
+    if (!mounted) return;
+    setState(() => _updChecking = false);
+    if (release == null) {
+      setState(() => _updMessage = 'Nije moguće provjeriti (GitHub nedostupan).');
+      return;
+    }
+    if (Updater.isNewer(release.version, _appVersion)) {
+      setState(() {
+        _updRelease = release;
+        _updMessage = 'Dostupna je novija verzija: ${release.version}';
+      });
+    } else {
+      setState(() => _updMessage = 'Imate najnoviju verziju ($_appVersion).');
+    }
+  }
+
+  Future<void> _downloadAndInstall() async {
+    final release = _updRelease;
+    if (release == null) return;
+    setState(() {
+      _updBusy = true;
+      _updProgress = 0;
+      _updMessage = 'Preuzimanje ${release.version}…';
+    });
+    try {
+      final path = await Updater.downloadApk(release, onProgress: (p) {
+        if (mounted) setState(() => _updProgress = p);
+      });
+      if (!mounted) return;
+      setState(() => _updMessage = 'Pokretanje instalacije…');
+      final size = await File(path).length();
+      if (size < 1024 * 1024) {
+        throw Exception('Preuzeta datoteka je neispravana (${(size / 1024).round()} kB).');
+      }
+      await Updater.install(path);
+      if (mounted) setState(() => _updBusy = false);
+      // If we get here the installer UI opened but the user returned —
+      // keep the app running; the install completes outside.
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _updBusy = false;
+          _updMessage = e.toString().replaceFirst('Exception: ', '');
+        });
+      }
     }
   }
 
@@ -428,7 +497,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
             padding: const EdgeInsets.only(top: 16),
             child: Text(_error!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
           ),
+        _updatesSection(),
         const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  /// In-app updates: check GitHub Releases, download and install the APK.
+  Widget _updatesSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionTitle('Ažuriranja'),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.system_update_alt, color: SR.accent),
+                    const SizedBox(width: 12),
+                    Text('Trenutna verzija: $_appVersion'),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                FilledButton.icon(
+                  onPressed: (_updChecking || _updBusy) ? null : _checkForUpdates,
+                  icon: _updChecking
+                      ? const SizedBox(
+                          width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.search),
+                  label: const Text('Provjeri ažuriranja'),
+                ),
+                if (_updRelease != null && !_updBusy) ...[
+                  const SizedBox(height: 10),
+                  FilledButton.icon(
+                    onPressed: _downloadAndInstall,
+                    icon: const Icon(Icons.download),
+                    label: Text('Preuzmi i instaliraj ${_updRelease!.version}'),
+                  ),
+                ],
+                if (_updBusy) ...[
+                  const SizedBox(height: 12),
+                  LinearProgressIndicator(value: _updProgress > 0 ? _updProgress : null),
+                  const SizedBox(height: 4),
+                  Text(
+                    _updProgress > 0
+                        ? '${(_updProgress * 100).round()}%'
+                        : 'Spajanje…',
+                    style: const TextStyle(color: SR.muted, fontSize: 12),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+                if (_updMessage != null) ...[
+                  const SizedBox(height: 8),
+                  Text(_updMessage!, style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ],
+            ),
+          ),
+        ),
       ],
     );
   }
