@@ -889,6 +889,37 @@ def create_column(payload: ColumnIn, db: Db, user: CurrentUser):
     return {"id": column.id, "name": column.name, "position": column.position}
 
 
+class ColumnPatchIn(BaseModel):
+    name: str
+
+
+@app.patch("/api/columns/{column_id}")
+def rename_column(column_id: int, payload: ColumnPatchIn, db: Db, user: CurrentUser):
+    """Rename a column (mobile parity with the web app's inline rename)."""
+    column = db.get(BoardColumn, column_id)
+    if not column:
+        raise HTTPException(status_code=404, detail="Kolona ne postoji")
+    ensure_board_access(db, user, column.board_id)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Naziv ne može biti prazan")
+    column.name = name[:80]
+    db.commit()
+    return {"id": column.id, "name": column.name, "position": column.position}
+
+
+@app.delete("/api/columns/{column_id}")
+def delete_column(column_id: int, db: Db, user: CurrentUser):
+    """Delete a column with all its tasks (cascades, same as the web app)."""
+    column = db.get(BoardColumn, column_id)
+    if not column:
+        raise HTTPException(status_code=404, detail="Kolona ne postoji")
+    ensure_board_access(db, user, column.board_id)
+    db.delete(column)
+    db.commit()
+    return {"ok": True}
+
+
 def serialize_task(task: Task) -> dict:
     items = sorted(task.items, key=lambda i: i.position)
     return {

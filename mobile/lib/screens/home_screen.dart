@@ -6,12 +6,16 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../api.dart';
 import '../theme.dart';
-import 'board_screen.dart';
+import 'files_screen.dart';
 import 'login_screen.dart';
 import 'notifications_screen.dart';
+import 'projects_screen.dart';
+import 'search_screen.dart';
+import 'settings_screen.dart';
 
-/// Main screen after login: layered navigation like the web app —
-/// projects (sidebar layer) → boards → kanban. Bottom tab: Obavijesti.
+/// Main screen after login — web parity in four tabs:
+/// Projekti (layered: projects → boards → kanban), Pretraga,
+/// Datoteke (per project) and Obavijesti with badge.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.api, this.session});
 
@@ -26,10 +30,10 @@ class _HomeScreenState extends State<HomeScreen> {
   Session? _session;
   bool _loading = true;
   String? _error;
-  List<dynamic> _projects = [];
+  List<Map<String, dynamic>> _projects = [];
   WebSocketChannel? _socket;
   int _unread = 0;
-  int _tab = 0; // 0 = Projekti, 1 = Obavijesti
+  int _tab = 0; // 0 Projekti, 1 Pretraga, 2 Datoteke, 3 Obavijesti
   Timer? _unreadPoll;
 
   @override
@@ -65,12 +69,14 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _refresh() async {
     try {
       final projects = await widget.api.get('/api/projects') as List<dynamic>;
-      setState(() => _projects = projects);
+      setState(() => _projects =
+          List<Map<String, dynamic>>.from(projects.map((p) => Map<String, dynamic>.from(p as Map))));
     } on AuthExpired {
       if (mounted) _forceLogin();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
       }
     }
   }
@@ -93,7 +99,7 @@ class _HomeScreenState extends State<HomeScreen> {
     socket.stream.listen(
       (data) {
         // ntfy publishes message envelopes as JSON — any event bumps the badge
-        // and refreshes; the board screen refreshes itself when resumed.
+        // and refreshes; screens refresh themselves when resumed.
         try {
           jsonDecode(data as String);
         } catch (_) {
@@ -112,13 +118,6 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.of(context).pushReplacement(MaterialPageRoute(
       builder: (_) => LoginScreen(baseUrl: widget.api.baseUrl),
     ));
-  }
-
-  Future<void> _openBoard(Map<String, dynamic> board) async {
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => BoardScreen(api: widget.api, boardId: board['id'] as int, boardName: board['name'] as String),
-    ));
-    await _refreshUnread();
   }
 
   @override
@@ -152,29 +151,26 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     final s = _session!;
     final screens = [
-      _ProjectsTab(
-        projects: _projects,
-        appName: s.appName,
-        username: (s.me['display_name'] as String?) ?? '',
-        onOpenBoard: _openBoard,
-        onRefresh: _refresh,
-      ),
+      ProjectsScreen(api: widget.api, projects: _projects, appName: s.appName),
+      SearchScreen(api: widget.api),
+      _FilesEntry(api: widget.api, projects: _projects),
       NotificationsScreen(api: widget.api, onOpened: _refreshUnread),
     ];
+    final titles = [s.appName, 'Pretraga', 'Datoteke', 'Obavijesti'];
 
     return Scaffold(
+      backgroundColor: SR.bg,
       appBar: AppBar(
-        title: Text(_tab == 0 ? s.appName : 'Obavijesti'),
+        title: Text(titles[_tab]),
         actions: [
           IconButton(
-            tooltip: 'Odjava',
-            icon: const Icon(Icons.logout),
+            tooltip: 'Postavke',
+            icon: const Icon(Icons.settings_outlined),
             onPressed: () async {
-              final navigator = Navigator.of(context);
-              await Api.clearSession();
-              navigator.pushReplacement(MaterialPageRoute(
-                builder: (_) => LoginScreen(baseUrl: widget.api.baseUrl),
+              await Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => SettingsScreen(session: s, onChanged: _boot),
               ));
+              if (mounted) setState(() {}); // reflect edits (app name, topic)
             },
           ),
         ],
@@ -190,6 +186,8 @@ class _HomeScreenState extends State<HomeScreen> {
         onDestinationSelected: (i) => setState(() => _tab = i),
         destinations: [
           const NavigationDestination(icon: Icon(Icons.folder_outlined), label: 'Projekti'),
+          const NavigationDestination(icon: Icon(Icons.search), label: 'Pretraga'),
+          const NavigationDestination(icon: Icon(Icons.folder_zip_outlined), label: 'Datoteke'),
           NavigationDestination(
             icon: Badge(
               isLabelVisible: _unread > 0,
@@ -204,54 +202,41 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-class _ProjectsTab extends StatelessWidget {
-  const _ProjectsTab({
-    required this.projects,
-    required this.appName,
-    required this.username,
-    required this.onOpenBoard,
-    required this.onRefresh,
-  });
+/// Files tab needs a project choice — show a picker over all projects.
+class _FilesEntry extends StatelessWidget {
+  const _FilesEntry({required this.api, required this.projects});
 
-  final List<dynamic> projects;
-  final String appName;
-  final String username;
-  final void Function(Map<String, dynamic>) onOpenBoard;
-  final Future<void> Function() onRefresh;
+  final Api api;
+  final List<Map<String, dynamic>> projects;
 
   @override
   Widget build(BuildContext context) {
+    if (projects.isEmpty) {
+      return const Center(child: Text('Nema projekata.', style: TextStyle(color: SR.muted)));
+    }
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        if (username.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Text('Prijavljen: $username', style: const TextStyle(color: SR.muted)),
-          ),
+        const Padding(
+          padding: EdgeInsets.only(bottom: 12),
+          child: Text('Odaberite projekt za njegove datoteke:', style: TextStyle(color: SR.muted)),
+        ),
         for (final p in projects)
           Card(
-            margin: const EdgeInsets.only(bottom: 12),
-            child: ExpansionTile(
-              tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              childrenPadding: const EdgeInsets.only(left: 16, right: 16, bottom: 12),
+            margin: const EdgeInsets.only(bottom: 10),
+            child: ListTile(
+              leading: const Icon(Icons.folder_outlined, color: SR.accent),
               title: Text(p['name'] as String? ?? ''),
-              iconColor: SR.accent,
-              collapsedIconColor: SR.accent,
-              children: [
-                for (final b in (p['boards'] as List<dynamic>? ?? []))
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.view_kanban_outlined, color: SR.accent),
-                    title: Text(b['name'] as String? ?? ''),
-                    onTap: () => onOpenBoard(Map<String, dynamic>.from(b as Map)),
-                  ),
-                if ((p['boards'] as List<dynamic>? ?? []).isEmpty)
-                  const Text('Nema ploča', style: TextStyle(color: SR.muted)),
-              ],
+              trailing: const Icon(Icons.chevron_right, color: SR.muted),
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => FilesScreen(
+                  api: api,
+                  projectId: p['id'] as int,
+                  projectName: p['name'] as String? ?? '',
+                ),
+              )),
             ),
           ),
-        if (projects.isEmpty) const Center(child: Text('Nema projekata.', style: TextStyle(color: SR.muted))),
       ],
     );
   }

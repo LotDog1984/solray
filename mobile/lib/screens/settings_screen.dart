@@ -1,0 +1,314 @@
+import 'package:flutter/material.dart';
+
+import '../api.dart';
+import '../theme.dart';
+import 'login_screen.dart';
+import 'onboarding_screen.dart';
+
+/// Postavke — everything the web app offers:
+/// account (logout, change server), notifications (ntfy topic + test),
+/// admin (app name, default columns, users).
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key, required this.session, required this.onChanged});
+
+  final Session session;
+  final VoidCallback onChanged; // re-fetch me/settings after edits
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  late final Api api = widget.session.api;
+  Map<String, dynamic> get me => widget.session.me;
+  bool get isAdmin => me['is_admin'] as bool? ?? false;
+
+  List<Map<String, dynamic>> _users = [];
+  String? _error;
+
+  late final TextEditingController _topic =
+      TextEditingController(text: me['ntfy_topic'] as String? ?? '');
+  late final TextEditingController _appName =
+      TextEditingController(text: widget.session.appName);
+  late final TextEditingController _columns = TextEditingController(
+      text: (widget.session.settings['default_columns'] as List<dynamic>? ?? [])
+          .join(', '));
+
+  @override
+  void initState() {
+    super.initState();
+    if (isAdmin) _loadUsers();
+  }
+
+  Future<void> _loadUsers() async {
+    try {
+      final users = await api.get('/api/users') as List<dynamic>;
+      if (mounted) {
+        setState(() => _users = List<Map<String, dynamic>>.from(users.map((u) => Map<String, dynamic>.from(u as Map))));
+      }
+    } catch (e) {
+      setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+    }
+  }
+
+  void _toast(Object e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+  }
+
+  // ---- notifications -------------------------------------------------------
+
+  Future<void> _saveTopic() async {
+    try {
+      await api.patch('/api/me/ntfy', {'topic': _topic.text.trim()});
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Topic spremljen.')));
+      widget.onChanged();
+    } catch (e) {
+      _toast(e);
+    }
+  }
+
+  Future<void> _testNtfy() async {
+    try {
+      final d = await api.post('/api/me/ntfy/test', {}) as Map<String, dynamic>;
+      if (!mounted) return;
+      final ok = d['ok'] as bool? ?? false;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ok ? 'Testna obavijest poslana — provjerite telefon.' : (d['reason'] as String? ?? 'Neuspjelo')),
+      ));
+    } catch (e) {
+      _toast(e);
+    }
+  }
+
+  // ---- admin: app settings --------------------------------------------------
+
+  Future<void> _saveAppSettings() async {
+    try {
+      final columns = [
+        for (final c in _columns.text.split(','))
+          if (c.trim().isNotEmpty) c.trim(),
+      ];
+      await api.put('/api/settings', {'app_name': _appName.text.trim(), 'default_columns': columns});
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Postavke spremljene.')));
+      widget.onChanged();
+    } catch (e) {
+      _toast(e);
+    }
+  }
+
+  // ---- admin: users ----------------------------------------------------------
+
+  Future<void> _newUser() async {
+    final username = TextEditingController();
+    final display = TextEditingController();
+    final password = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: SR.panel,
+        title: const Text('Novi korisnik'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: username, decoration: const InputDecoration(labelText: 'Korisničko ime')),
+            const SizedBox(height: 8),
+            TextField(controller: display, decoration: const InputDecoration(labelText: 'Puno ime')),
+            const SizedBox(height: 8),
+            TextField(controller: password, obscureText: true, decoration: const InputDecoration(labelText: 'Lozinka')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Odustani')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Dodaj')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await api.post('/api/users', {
+        'username': username.text.trim(),
+        'display_name': display.text.trim(),
+        'password': password.text,
+      });
+      await _loadUsers();
+    } catch (e) {
+      _toast(e);
+    }
+  }
+
+  Future<void> _deleteUser(Map<String, dynamic> u) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: SR.panel,
+        title: const Text('Potvrda'),
+        content: Text('Obrisati korisnika "${u['username']}"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Odustani')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFDC2626)),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Obriši'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await api.delete('/api/users/${u['id']}');
+      await _loadUsers();
+    } catch (e) {
+      _toast(e);
+    }
+  }
+
+  // ---- build ------------------------------------------------------------------
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _sectionTitle('Račun'),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.person, color: SR.accent),
+            title: Text(me['display_name'] as String? ?? ''),
+            subtitle: Text(
+              '@${me['username']}${isAdmin ? ' · administrator' : ''}',
+              style: const TextStyle(color: SR.muted, fontSize: 12),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final navigator = Navigator.of(context);
+                  await Api.clearSession();
+                  navigator.pushReplacement(MaterialPageRoute(
+                      builder: (_) => LoginScreen(baseUrl: api.baseUrl)));
+                },
+                icon: const Icon(Icons.logout, size: 18),
+                label: const Text('Odjava'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final navigator = Navigator.of(context);
+                  await Api.forgetServer();
+                  navigator.pushReplacement(
+                      MaterialPageRoute(builder: (_) => const OnboardingScreen()));
+                },
+                icon: const Icon(Icons.dns_outlined, size: 18),
+                label: const Text('Poslužitelj'),
+              ),
+            ),
+          ],
+        ),
+
+        _sectionTitle('Obavijesti (ntfy)'),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _topic,
+                  decoration: const InputDecoration(labelText: 'Vaš ntfy topic'),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(onPressed: _saveTopic, child: const Text('Spremi topic')),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: FilledButton(onPressed: _testNtfy, child: const Text('Testiraj')),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        if (isAdmin) ...[
+          _sectionTitle('Postavke aplikacije'),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _appName,
+                    decoration: const InputDecoration(labelText: 'Naziv aplikacije'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _columns,
+                    decoration: const InputDecoration(
+                      labelText: 'Zadane kolone (odvojene zarezom)',
+                      hintText: 'Backlog, U tijeku, Gotovo',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  FilledButton(onPressed: _saveAppSettings, child: const Text('Spremi postavke')),
+                ],
+              ),
+            ),
+          ),
+
+          _sectionTitle('Korisnici'),
+          for (final u in _users)
+            Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: Icon(
+                  u['is_admin'] as bool? ?? false ? Icons.admin_panel_settings : Icons.person_outline,
+                  color: SR.accent,
+                ),
+                title: Text(u['display_name'] as String? ?? ''),
+                subtitle: Text('@${u['username']}', style: const TextStyle(color: SR.muted, fontSize: 12)),
+                trailing: (u['id'] == me['id'])
+                    ? null
+                    : IconButton(
+                        tooltip: 'Obriši',
+                        icon: const Icon(Icons.delete_outline, color: Color(0xFFDC2626), size: 20),
+                        onPressed: () => _deleteUser(u),
+                      ),
+              ),
+            ),
+          OutlinedButton.icon(
+            onPressed: _newUser,
+            icon: const Icon(Icons.person_add_alt_1, size: 18),
+            label: const Text('Novi korisnik'),
+          ),
+        ],
+
+        if (_error != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 16),
+            child: Text(_error!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+          ),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  Widget _sectionTitle(String t) => Padding(
+        padding: const EdgeInsets.only(top: 20, bottom: 8),
+        child: Text(t, style: const TextStyle(color: SR.muted, fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 1.2)),
+      );
+}
