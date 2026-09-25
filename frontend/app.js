@@ -1386,6 +1386,19 @@ async function renderNotifications() {
 /* Global shopping list: every Stavka from every board's supplies To-Do list in
    one place. Each row shows the project + board it came from (backend sends
    project_name / board_name), and clicking the origin opens that board. */
+/* 1.10.0: plain-text order for the supplier — only OPEN (unchecked) Stavke,
+   so re-sending an order never repeats already-bought items. */
+function buildNabavaOrderText(data) {
+  const open = (data?.entries || []).filter((e) => !e.is_done);
+  if (!open.length) return "";
+  return open
+    .map((e) => {
+      const origin = e.board_id ? `  (${e.project_name ? `${e.project_name} — ` : ""}${e.board_name})` : "";
+      return `- ${e.title}${origin}`;
+    })
+    .join("\n");
+}
+
 async function renderNabava() {
   const view = document.querySelector("#nabavaView");
   if (!view) return;
@@ -1423,6 +1436,10 @@ async function renderNabava() {
       <small class="muted">${openCount ? `${openCount} za nabaviti` : "Sve nabavljeno 🎉"}</small>
     </div>
     <p class="muted" style="font-size:13px;margin:6px 0 0 0;">Zajednički popis svih stavki za nabavu iz svih ploča. Svaka stavka nosi projekt i ploču u kojoj je nastala, a ovdje ih možete i ručno dodati.</p>
+    <div class="row nabava-actions">
+      <button type="button" id="nabavaMail" class="secondary" title="Otvori vašu poštu s popisom neoznačenih stavki">✉️ Pošalji e-mailom</button>
+      <button type="button" id="nabavaClear" class="danger" title="Obriši sve označene (nabavljene) stavke iz svih popisa">Izbriši Preuzete Stvari</button>
+    </div>
     <form id="nabavaAddForm" class="row nabava-add-row">
       <input name="title" placeholder="Dodaj stavku ručno…" maxlength="255" required />
       <button type="submit" class="primary">Dodaj</button>
@@ -1452,6 +1469,50 @@ async function renderNabava() {
     }
     await renderNabava();
   };
+
+  // 1.10.0: export the OPEN items as a mailto: draft (opens the user's own
+  // mail app with the list prefilled in the body). The text is also copied to
+  // the clipboard as a fallback — paste it if the mail app does not open.
+  const mailBtn = view.querySelector("#nabavaMail");
+  if (mailBtn) {
+    mailBtn.onclick = async () => {
+      const text = buildNabavaOrderText(data);
+      if (!text) {
+        alert("Nema otvorenih (neoznačenih) stavki za slanje.");
+        return;
+      }
+      const subject = `${name} — ${new Date().toLocaleDateString("hr-HR")}`;
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } catch (_) {}
+      if (!copied) prompt("Kopirajte popis za nabavu (Ctrl+C):", text);
+      const original = mailBtn.textContent;
+      mailBtn.textContent = "✓ Kopirano — otvaram poštu…";
+      mailBtn.disabled = true;
+      window.open(`mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text)}`, "_self");
+      setTimeout(() => {
+        mailBtn.textContent = original;
+        mailBtn.disabled = false;
+      }, 2500);
+    };
+  }
+
+  // 1.10.0: housekeeping — delete every checked Stavka from ALL lists.
+  const clearBtn = view.querySelector("#nabavaClear");
+  if (clearBtn) {
+    clearBtn.disabled = !data.entries.some((e) => e.is_done);
+    clearBtn.onclick = async () => {
+      if (!confirm("Obrisati SVE označene (nabavljene) stavke iz svih popisa? Ova radnja se ne može poništiti.")) return;
+      try {
+        await api.request("/api/nabava/checked", { method: "DELETE" });
+        await renderNabava();
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+  }
 
   const addForm = view.querySelector("#nabavaAddForm");
   if (addForm) {

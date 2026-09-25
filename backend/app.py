@@ -167,6 +167,9 @@ class TodoEntry(Base):
     todo_list_id: Mapped[int] = mapped_column(ForeignKey("todo_lists.id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column(String(255))
     is_done: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 1.10.0: when the Stavka was ticked as bought — orders the checked items
+    # (most recently checked first) in the global Nabava view.
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     position: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -277,8 +280,11 @@ class TaskMoveIn(BaseModel):
 
 
 class TodoEntryIn(BaseModel):
-    title: str
-    is_done: bool = False
+    # 1.10.0: both fields optional on PATCH (title-only rename no longer
+    # unticks a done Stavka; is_done-only tick works without resending title).
+    # POST still requires a non-empty title (validated in the endpoints).
+    title: str | None = None
+    is_done: bool | None = None
 
 
 class NabavaItemIn(BaseModel):
@@ -581,6 +587,8 @@ def startup() -> None:
         # 1.9.0: todo_lists.board_id becomes nullable — the global list (NULL)
         # holds Nabava entries added manually in the global view.
         conn.execute(text("ALTER TABLE todo_lists ALTER COLUMN board_id DROP NOT NULL"))
+        # 1.10.0: when a Stavka was ticked as bought (orders checked items)
+        conn.execute(text("ALTER TABLE todo_entries ADD COLUMN IF NOT EXISTS checked_at TIMESTAMPTZ NULL"))
     # Backfill: put every existing board into a default project so nothing is lost.
     db = SessionLocal()
     try:
@@ -1430,6 +1438,7 @@ def serialize_nabava_row(entry: TodoEntry, todo: TodoList, board: Board | None, 
         "project_name": project.name if project else "",
         "title": entry.title,
         "is_done": entry.is_done,
+        "checked_at": entry.checked_at.isoformat() if entry.checked_at else None,
         "position": entry.position,
         "created_at": entry.created_at.isoformat() if entry.created_at else None,
     }
@@ -1441,12 +1450,15 @@ def get_nabava(db: Db, user: CurrentUser):
     (oldest first), done at the bottom (newest completion first)."""
     # 1.9.0: outer join — manually added entries live in a global list whose
     # board_id is NULL, so they must survive the Board join.
+    # Open Stavke first (oldest first); checked ones below, most recently
+    # checked first — so the item you just ticked sits at the top of the
+    # done section, right under the unchecked items (1.10.0 request).
     rows = db.execute(
         select(TodoEntry, TodoList, Board, Project)
         .join(TodoList, TodoEntry.todo_list_id == TodoList.id)
         .outerjoin(Board, TodoList.board_id == Board.id)
         .outerjoin(Project, Board.project_id == Project.id)
-        .order_by(TodoEntry.is_done, TodoEntry.created_at)
+        .order_by(TodoEntry.is_done, TodoEntry.checked_at.desc().nullsfirst(), TodoEntry.created_at)
     ).all()
     return {"name": get_default_todo_list_name(db), "entries": [serialize_nabava_row(*row) for row in rows]}
 
@@ -1455,7 +1467,7 @@ def get_nabava(db: Db, user: CurrentUser):
 def add_todo_entry(board_id: int, payload: TodoEntryIn, db: Db, user: CurrentUser):
     board = ensure_board_access(db, user, board_id)
     todo = ensure_todo_list(db, board)
-    title = payload.title.strip()
+    title = (payload.title or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="Stavka ne smije biti prazna")
     position = db.scalar(select(func.max(TodoEntry.position)).where(TodoEntry.todo_list_id == todo.id)) or 0
@@ -1475,10 +1487,14 @@ def update_todo_entry(board_id: int, entry_id: int, payload: TodoEntryIn, db: Db
     entry = db.get(TodoEntry, entry_id)
     if not entry or entry.todo_list_id != todo.id:
         raise HTTPException(status_code=404, detail="Stavka ne postoji")
-    title = payload.title.strip()
-    if title:
-        entry.title = title[:255]
-    entry.is_done = payload.is_done
+    if payload.title is not None:
+        title = payload.title.strip()
+        if title:
+            entry.title = title[:255]
+    if payload.is_done is not None:
+        # 1.10.0: stamp when the item was bought; clear the stamp on untick.
+        entry.is_done = payload.is_done
+        entry.checked_at = datetime.now(timezone.utc) if payload.is_done else None
     db.commit()
     notify_change("board", board_id)
     notify_change("nabava")
@@ -1515,7 +1531,7 @@ def _global_todo_entry_or_404(db: Session, entry_id: int) -> TodoEntry:
 @app.post("/api/nabava/items")
 def add_nabava_item(payload: TodoEntryIn, db: Db, user: CurrentUser):
     """Add a Stavka manually in the global Nabava list — not tied to any board."""
-    title = payload.title.strip()
+    title = (payload.title or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="Stavka ne smije biti prazna")
     todo = get_global_todo_list(db)
@@ -1537,7 +1553,9 @@ def update_nabava_item(entry_id: int, payload: NabavaItemIn, db: Db, user: Curre
         if title:
             entry.title = title[:255]
     if payload.is_done is not None:
+        # 1.10.0: stamp when the item was bought; clear the stamp on untick.
         entry.is_done = payload.is_done
+        entry.checked_at = datetime.now(timezone.utc) if payload.is_done else None
     db.commit()
     notify_change("nabava")
     return {"ok": True}
@@ -1551,6 +1569,31 @@ def delete_nabava_item(entry_id: int, db: Db, user: CurrentUser):
     db.commit()
     notify_change("nabava")
     return {"ok": True}
+
+
+@app.delete("/api/nabava/checked")
+def clear_checked_nabava(db: Db, user: CurrentUser):
+    """1.10.0: delete every checked Stavka across ALL lists (the global manual
+    list and every board's To-Do list) — housekeeping so the Nabava view does
+    not fill up with already-bought items. Notifies affected boards so open
+    board views refresh too."""
+    done_entries = db.scalars(select(TodoEntry).where(TodoEntry.is_done.is_(True))).all()
+    if not done_entries:
+        return {"ok": True, "deleted": 0}
+    affected_boards = {
+        todo.board_id
+        for todo in db.scalars(
+            select(TodoList).where(TodoList.id.in_([e.todo_list_id for e in done_entries]))
+        ).all()
+        if todo.board_id is not None
+    }
+    for entry in done_entries:
+        db.delete(entry)
+    db.commit()
+    for board_id in sorted(affected_boards):
+        notify_change("board", board_id)
+    notify_change("nabava")
+    return {"ok": True, "deleted": len(done_entries)}
 
 
 @app.get("/api/projects/{project_id}/files")

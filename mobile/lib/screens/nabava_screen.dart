@@ -1,8 +1,26 @@
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../api.dart';
 import '../theme.dart';
 import 'board_screen.dart';
+
+/// 1.10.0: plain-text order for the supplier — only OPEN (unchecked) Stavke,
+/// so re-sending an order never repeats already-bought items. Public so tests
+/// can exercise the format directly.
+String buildNabavaOrderText(List<Map<String, dynamic>> entries) {
+  final open = entries.where((e) => !(e['is_done'] as bool? ?? false)).toList();
+  if (open.isEmpty) return '';
+  return open.map((e) {
+    final boardId = e['board_id'];
+    final project = e['project_name'] as String? ?? '';
+    final board = e['board_name'] as String? ?? '';
+    final origin = boardId != null && (project.isNotEmpty || board.isNotEmpty)
+        ? '  (${[if (project.isNotEmpty) project, if (board.isNotEmpty) board].join(' — ')})'
+        : '';
+    return '- ${e['title'] as String? ?? ''}$origin';
+  }).join('\n');
+}
 
 /// Global "Nabava" tab — one-stop shopping list aggregating the supplies
 /// To-Do entries of ALL boards. Every entry shows the project + board it
@@ -27,6 +45,7 @@ class _NabavaTabState extends State<NabavaTab> {
   List<Map<String, dynamic>> _entries = [];
   bool _loading = true;
   String? _error;
+  String _listName = 'Nabava';
 
   @override
   void didUpdateWidget(NabavaTab old) {
@@ -47,6 +66,7 @@ class _NabavaTabState extends State<NabavaTab> {
       setState(() {
         _entries = List<Map<String, dynamic>>.from(
             (d['entries'] as List<dynamic>? ?? []).map((e) => Map<String, dynamic>.from(e as Map)));
+        _listName = d['name'] as String? ?? 'Nabava';
         _loading = false;
       });
     } catch (e) {
@@ -78,6 +98,44 @@ class _NabavaTabState extends State<NabavaTab> {
   Future<void> _delete(Map<String, dynamic> e) async {
     try {
       await widget.api.delete('/api/boards/${e['board_id']}/todo/${e['id']}');
+      await _load();
+      widget.onChanged?.call();
+    } catch (err) {
+      _showError(err);
+    }
+  }
+
+  /// 1.10.0: export the OPEN items — opens the native share sheet (pick
+  /// Gmail/Outlook/... and the list lands in the mail body). Subject is
+  /// prefilled; body carries only unchecked items.
+  Future<void> _export() async {
+    final text = buildNabavaOrderText(_entries);
+    if (text.isEmpty) {
+      _showError('Nema otvorenih (neoznačenih) stavki za slanje.');
+      return;
+    }
+    final now = DateTime.now();
+    final subject = '$_listName — ${now.day}.${now.month}.${now.year}.';
+    await Share.share(text, subject: subject);
+  }
+
+  /// 1.10.0: housekeeping — delete every checked Stavka from ALL lists.
+  Future<void> _clearChecked() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: SR.panel,
+        title: const Text('Izbriši Preuzete Stvari?'),
+        content: const Text('Ovo briše SVE označene (nabavljene) stavke iz svih popisa. Radnja se ne može poništiti.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Odustani')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Izbriši')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await widget.api.delete('/api/nabava/checked');
       await _load();
       widget.onChanged?.call();
     } catch (err) {
@@ -194,6 +252,26 @@ class _NabavaTabState extends State<NabavaTab> {
             onPressed: _addManual,
             icon: const Icon(Icons.add),
             label: const Text('Dodaj stavku ručno'),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _entries.any((e) => !(e['is_done'] as bool? ?? false)) ? _export : null,
+                  icon: const Icon(Icons.mail_outline, size: 18),
+                  label: const Text('Pošalji e-mailom'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _entries.any((e) => e['is_done'] as bool? ?? false) ? _clearChecked : null,
+                  icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+                  label: const Text('Izbriši Preuzete Stvari', maxLines: 1, overflow: TextOverflow.ellipsis),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           for (final e in _entries)
