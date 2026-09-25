@@ -4,12 +4,17 @@ import '../api.dart';
 import '../theme.dart';
 import 'board_screen.dart';
 
-/// Full-screen search over projects, boards and tasks (web app parity).
-/// Tap a task → opens its board. Uses the shared /api/search endpoint.
+/// Full-screen search over projects, boards, tasks and Nabava entries (web
+/// app parity). Tap a task → opens its board; a board Nabava hit opens its
+/// board; a manual Nabava hit jumps to the Nabava tab. Shared /api/search.
 class SearchScreen extends StatefulWidget {
-  const SearchScreen({super.key, required this.api});
+  const SearchScreen({super.key, required this.api, this.onOpenNabava});
 
   final Api api;
+
+  /// 1.9.3: called when the user taps a manually added Nabava hit —
+  /// HomeScreen switches to the Nabava tab.
+  final VoidCallback? onOpenNabava;
 
   @override
   State<SearchScreen> createState() => _SearchScreenState();
@@ -46,7 +51,23 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Future<void> _open(Map<String, dynamic> r) async {
-    if (r['type'] != 'task' || r['board_id'] == null) return;
+    final type = r['type'] as String? ?? '';
+    if (type == 'nabava') {
+      // 1.9.3: board-origin Stavka → its board; manual one → Nabava tab.
+      if (r['board_id'] != null) {
+        await Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => BoardScreen(
+            api: widget.api,
+            boardId: r['board_id'] as int,
+            boardName: r['board_name'] as String? ?? 'Ploča',
+          ),
+        ));
+      } else {
+        widget.onOpenNabava?.call();
+      }
+      return;
+    }
+    if (type != 'task' || r['board_id'] == null) return;
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => BoardScreen(
         api: widget.api,
@@ -59,6 +80,7 @@ class _SearchScreenState extends State<SearchScreen> {
   IconData _icon(String type) => switch (type) {
         'project' => Icons.folder_outlined,
         'board' => Icons.view_kanban_outlined,
+        'nabava' => Icons.shopping_cart_outlined,
         _ => Icons.check_circle_outline,
       };
 
@@ -72,7 +94,7 @@ class _SearchScreenState extends State<SearchScreen> {
           controller: _ctrl,
           autofocus: true,
           decoration: const InputDecoration(
-            hintText: 'Pretraži projekte, ploče, taskove...',
+            hintText: 'Pretraži projekte, ploče, taskove, nabavu...',
             border: InputBorder.none,
           ),
           onChanged: _run,
@@ -183,7 +205,9 @@ class BoardSearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
                         ? Icons.folder_outlined
                         : r['type'] == 'board'
                             ? Icons.view_kanban_outlined
-                            : Icons.check_circle_outline,
+                            : r['type'] == 'nabava'
+                                ? Icons.shopping_cart_outlined
+                                : Icons.check_circle_outline,
                     color: SR.accent,
                   ),
                   title: Text(r['label'] as String? ?? ''),

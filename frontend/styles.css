@@ -536,6 +536,11 @@ textarea {
   background: var(--mention);
 }
 
+/* 1.9.3: Nabava search hits — green, matching the is-done tint used by rows */
+.search-type.type-nabava {
+  background: #6ee7b7;
+}
+
 .search-label {
   grid-area: label;
   font-weight: 700;

@@ -369,7 +369,7 @@ function renderSidebar() {
     </div>
     <div style="color:#94a3b8;font-size:13px;">Prijavljen: ${escapeHtml(state.me?.display_name || state.me?.username || "")}</div>
     <form id="sideSearchForm" class="side-search">
-      <input id="searchInput" type="search" placeholder="Traži projekte, ploče, zadatke…" value="${escapeHtml(state.searchQuery || "")}" autocomplete="off" />
+      <input id="searchInput" type="search" placeholder="Traži projekte, ploče, zadatke, nabavu…" value="${escapeHtml(state.searchQuery || "")}" autocomplete="off" />
     </form>
     <div class="side-layer">${layerHtml}</div>
     <div style="display:grid;gap:8px;">
@@ -538,8 +538,17 @@ function bindCardMenus(root, handlers) {
 
 async function openSearchResult(result) {
   try {
+    // Leaving search: clear the results so the destination view renders
+    // immediately (renderView keeps showing results while they are set).
+    state.searchResults = null;
+    state.searchQuery = "";
     if (result.type === "project" && result.project_id) {
       goBoards(result.project_id);
+      return;
+    }
+    // 1.9.3: Nabava hits without a board (manual entries) open the global view.
+    if (result.type === "nabava" && !result.board_id) {
+      await goNabava();
       return;
     }
     if (result.board_id) {
@@ -627,7 +636,7 @@ function renderSearchResults() {
           (r, i) => `
           <button class="search-result" data-result-index="${i}">
             <span class="search-type type-${r.type}">${
-              r.type === "project" ? "Projekt" : r.type === "board" ? "Ploča" : "Zadatak"
+              r.type === "project" ? "Projekt" : r.type === "board" ? "Ploča" : r.type === "nabava" ? "Nabava" : "Zadatak"
             }</span>
             <span class="search-label">${escapeHtml(r.label)}</span>
             ${r.snippet ? `<span class="search-snippet">${escapeHtml(r.snippet)}</span>` : ""}

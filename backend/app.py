@@ -1013,6 +1013,39 @@ def search_everything(db: Db, user: CurrentUser, q: str = ""):
                 }
             )
 
+    # 4) Nabava entries (1.9.3): Stavke from every board's To-Do list plus the
+    # ones added manually in the global list. Board-origin results open their
+    # board; manual ones open the global Nabava view in the UIs.
+    nabava_rows = db.execute(
+        select(TodoEntry, TodoList, Board, Project)
+        .join(TodoList, TodoEntry.todo_list_id == TodoList.id)
+        .outerjoin(Board, TodoList.board_id == Board.id)
+        .outerjoin(Project, Board.project_id == Project.id)
+        .where(TodoEntry.title.ilike(like))
+        .order_by(TodoEntry.created_at.desc())
+        .limit(50)
+    ).all()
+    for entry, todo, board, project in nabava_rows:
+        origin = (
+            f"{project.name} → {board.name}" if board and project else (board.name if board else "Ručno dodano")
+        )
+        detail = f"Stavka nabave · {origin}"
+        if entry.is_done:
+            detail += " · nabavljeno ✔"
+        results.append(
+            {
+                "type": "nabava",
+                "project_id": board.project_id if board else None,
+                "project_name": project.name if project else "",
+                "board_id": board.id if board else None,
+                "board_name": board.name if board else "",
+                "entry_id": entry.id,
+                "is_done": entry.is_done,
+                "label": entry.title,
+                "detail": detail,
+            }
+        )
+
     return {"results": results}
 
 

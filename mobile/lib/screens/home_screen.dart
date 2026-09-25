@@ -238,7 +238,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final todoName = (s.settings['default_todo_list'] as String?) ?? 'Nabava';
     final screens = [
       ProjectsScreen(api: widget.api, projects: _projects, appName: s.appName),
-      SearchScreen(api: widget.api),
+      SearchScreen(api: widget.api, onOpenNabava: () => setState(() => _tab = 4)),
       _FilesEntry(api: widget.api, projects: _projects),
       NotificationsScreen(api: widget.api, onOpened: _refreshUnread),
       NabavaTab(
