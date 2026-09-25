@@ -32,7 +32,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Session? _session;
   bool _loading = true;
   String? _error;
@@ -48,6 +48,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // 1.10.2: refresh on app resume
     _boot();
     Notifications.setTapHandler(_onNotificationTap);
     if (widget.launchPayload != null) {
@@ -87,6 +88,19 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() => _tab = 3); // Obavijesti
   }
 
+  /// 1.10.2: phone returns from background/sleep — reload the visible data
+  /// immediately instead of waiting for the sync socket to notice.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Reconnect the sync socket immediately (skip the up-to-5-min backoff)
+      // and reload the visible data — the phone slept, so assume staleness.
+      SyncBus.forApi(widget.api).poke();
+      _refresh(silent: true);
+      _refreshUnread();
+    }
+  }
+
   Future<void> _boot() async {
     try {
       final session = widget.session ??
@@ -99,7 +113,19 @@ class _HomeScreenState extends State<HomeScreen> {
         _session = session;
         _loading = false;
       });
-      await _refresh();
+      // 1.10.2: the first projects fetch often races the phone waking its
+      // network (empty list until a manual pull). Retry a few times before
+      // giving up — only a total failure shows the retry screen.
+      var loaded = false;
+      for (var attempt = 0; attempt < 3 && !loaded; attempt++) {
+        if (attempt > 0) await Future<void>.delayed(Duration(seconds: 2 * attempt));
+        await _refresh(silent: true);
+        loaded = _projects.isNotEmpty;
+      }
+      if (!loaded && _projects.isEmpty) {
+        // Empty might be genuine (fresh server) — don't block the app on it;
+        // the tab switch / tick / pull refreshes cover it from here on.
+      }
       await _refreshUnread();
       _connectNotifications();
       _connectSync();
@@ -113,7 +139,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _refresh() async {
+  /// silent: no snackbar on failure — used for automatic refreshes (sync
+  /// events, fallback tick, tab switch, app resume) so a transient error
+  /// never spams the user; the next automatic attempt retries anyway.
+  Future<void> _refresh({bool silent = false}) async {
     try {
       final projects = await widget.api.get('/api/projects') as List<dynamic>;
       setState(() => _projects =
@@ -121,7 +150,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } on AuthExpired {
       if (mounted) _forceLogin();
     } catch (e) {
-      if (mounted) {
+      if (!silent && mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
       }
@@ -185,12 +214,20 @@ class _HomeScreenState extends State<HomeScreen> {
     final bus = SyncBus.forApi(widget.api); // shared per-server singleton
     bus.listen('projects', (_) {
       if (!mounted) return;
-      if (_tab == 0) _refresh();
+      if (_tab == 0) _refresh(silent: true);
       if (_tab == 4) setState(() => _projectsTick++); // Nabava tab: reload via its own listener
     });
     bus.listen('nabava', (_) {
       if (!mounted || _tab != 4) return;
       setState(() => _projectsTick++); // rebuild → NabavaTab refetches in didUpdateWidget
+    });
+    // 1.10.2: listen to the 20 s fallback tick (fires while the sync socket
+    // is down) — this is what was missing: with the socket asleep the
+    // Projects tab never refreshed without a manual pull.
+    bus.listen('tick', (_) {
+      if (!mounted) return;
+      if (_tab == 0) _refresh(silent: true);
+      if (_tab == 4) setState(() => _projectsTick++); // Nabava refetches via its signal
     });
     // files events are handled inside FilesScreen (pushed route)
   }
@@ -205,6 +242,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _unreadPoll?.cancel();
     SyncBus.drop(widget.api.baseUrl); // leaving the app's main screen (logout/server change)
     _reconnect?.cancel();
@@ -278,7 +316,13 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: SR.sidebar,
         indicatorColor: SR.accentDark,
         selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
+        // 1.10.2: opening a tab always shows fresh data — Projekti reloads
+        // silently (fixes "stale after some time"), Nabava remounts and
+        // loads itself.
+        onDestinationSelected: (i) {
+          setState(() => _tab = i);
+          if (i == 0) _refresh(silent: true);
+        },
         destinations: [
           const NavigationDestination(icon: Icon(Icons.folder_outlined), label: 'Projekti'),
           const NavigationDestination(icon: Icon(Icons.search), label: 'Pretraga'),
