@@ -6,20 +6,13 @@ import '../theme.dart';
 import 'board_screen.dart';
 
 /// 1.10.0: plain-text order for the supplier — only OPEN (unchecked) Stavke,
-/// so re-sending an order never repeats already-bought items. Public so tests
-/// can exercise the format directly.
+/// so re-sending an order never repeats already-bought items. 1.10.1: just the
+/// item text the user typed — no project/board suffix in the export. Public so
+/// tests can exercise the format directly.
 String buildNabavaOrderText(List<Map<String, dynamic>> entries) {
   final open = entries.where((e) => !(e['is_done'] as bool? ?? false)).toList();
   if (open.isEmpty) return '';
-  return open.map((e) {
-    final boardId = e['board_id'];
-    final project = e['project_name'] as String? ?? '';
-    final board = e['board_name'] as String? ?? '';
-    final origin = boardId != null && (project.isNotEmpty || board.isNotEmpty)
-        ? '  (${[if (project.isNotEmpty) project, if (board.isNotEmpty) board].join(' — ')})'
-        : '';
-    return '- ${e['title'] as String? ?? ''}$origin';
-  }).join('\n');
+  return open.map((e) => '- ${e['title'] as String? ?? ''}').join('\n');
 }
 
 /// Global "Nabava" tab — one-stop shopping list aggregating the supplies

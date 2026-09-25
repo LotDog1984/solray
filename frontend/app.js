@@ -1387,16 +1387,12 @@ async function renderNotifications() {
    one place. Each row shows the project + board it came from (backend sends
    project_name / board_name), and clicking the origin opens that board. */
 /* 1.10.0: plain-text order for the supplier — only OPEN (unchecked) Stavke,
-   so re-sending an order never repeats already-bought items. */
+   so re-sending an order never repeats already-bought items. 1.10.1: just the
+   item text the user typed — no project/board suffix in the export. */
 function buildNabavaOrderText(data) {
   const open = (data?.entries || []).filter((e) => !e.is_done);
   if (!open.length) return "";
-  return open
-    .map((e) => {
-      const origin = e.board_id ? `  (${e.project_name ? `${e.project_name} — ` : ""}${e.board_name})` : "";
-      return `- ${e.title}${origin}`;
-    })
-    .join("\n");
+  return open.map((e) => `- ${e.title}`).join("\n");
 }
 
 async function renderNabava() {

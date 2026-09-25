@@ -120,4 +120,25 @@ void main() {
     await tester.pump();
     expect(renamed, isTrue);
   });
+
+  testWidgets('1.10.0: export text has only open items, open first', (tester) async {
+    final text = buildNabavaOrderText(const [
+      {'id': 1, 'board_id': 3, 'title': 'Vijci 6x60', 'is_done': false, 'project_name': 'Remete', 'board_name': 'Kuhinja'},
+      {'id': 2, 'board_id': null, 'title': 'Silikon', 'is_done': false, 'project_name': '', 'board_name': ''},
+      {'id': 3, 'board_id': 3, 'title': 'Boja bijela', 'is_done': true, 'project_name': 'Remete', 'board_name': 'Kuhinja'},
+    ]);
+
+    final lines = text.split('\n');
+    expect(lines, hasLength(2)); // done item excluded
+    // 1.10.1: only the item text the user typed — no project/board suffix.
+    expect(lines[0], '- Vijci 6x60');
+    expect(lines[1], '- Silikon');
+  });
+
+  testWidgets('1.10.0: export text empty when everything is checked', (tester) async {
+    final text = buildNabavaOrderText(const [
+      {'id': 3, 'board_id': 3, 'title': 'Boja bijela', 'is_done': true, 'project_name': '', 'board_name': ''},
+    ]);
+    expect(text, isEmpty);
+  });
 }
