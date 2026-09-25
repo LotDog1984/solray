@@ -347,6 +347,36 @@ class _BoardScreenState extends State<BoardScreen> {
       ((_board?['todo_list'] as Map<String, dynamic>? )?['entries'] as List<dynamic>? ?? [])
           .map((e) => Map<String, dynamic>.from(e as Map)));
 
+  /// 1.9.2: edit a Stavka's text after creation (typo, wrong quantity).
+  Future<void> _renameTodo(Map<String, dynamic> entry) async {
+    final ctrl = TextEditingController(text: entry['title'] as String? ?? '');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: SR.panel,
+        title: const Text('Uredi stavku'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Naziv stavke'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Odustani')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Spremi')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final title = ctrl.text.trim();
+    if (title.isEmpty) return;
+    try {
+      await widget.api.patch('/api/boards/${widget.boardId}/todo/${entry['id']}', {'title': title});
+      await _load();
+    } catch (e) {
+      _showError(e);
+    }
+  }
+
   Future<void> _addTodo() async {
     final ctrl = TextEditingController();
     final ok = await showDialog<bool>(
@@ -473,6 +503,7 @@ class _BoardScreenState extends State<BoardScreen> {
                         onAdd: _addTodo,
                         onToggle: _toggleTodo,
                         onDelete: _deleteTodo,
+                        onRename: _renameTodo,
                       ),
                       if (columns.isEmpty)
                         const Center(
@@ -603,6 +634,7 @@ class _TodoPanel extends StatelessWidget {
     required this.onAdd,
     required this.onToggle,
     required this.onDelete,
+    required this.onRename,
   });
 
   final String name;
@@ -610,6 +642,7 @@ class _TodoPanel extends StatelessWidget {
   final Future<void> Function() onAdd;
   final Future<void> Function(Map<String, dynamic>) onToggle;
   final Future<void> Function(Map<String, dynamic>) onDelete;
+  final Future<void> Function(Map<String, dynamic>) onRename;
 
   @override
   Widget build(BuildContext context) {
@@ -638,7 +671,7 @@ class _TodoPanel extends StatelessWidget {
             child: ListView(
               children: [
                 for (final e in entries)
-                  _TodoRow(entry: e, onToggle: onToggle, onDelete: onDelete),
+                  _TodoRow(entry: e, onToggle: onToggle, onDelete: onDelete, onRename: onRename),
                 if (entries.isEmpty)
                   const Text(
                     'Nema stavki — dodajte prvu ispod.',
@@ -661,11 +694,17 @@ class _TodoPanel extends StatelessWidget {
 }
 
 class _TodoRow extends StatelessWidget {
-  const _TodoRow({required this.entry, required this.onToggle, required this.onDelete});
+  const _TodoRow({
+    required this.entry,
+    required this.onToggle,
+    required this.onDelete,
+    required this.onRename,
+  });
 
   final Map<String, dynamic> entry;
   final Future<void> Function(Map<String, dynamic>) onToggle;
   final Future<void> Function(Map<String, dynamic>) onDelete;
+  final Future<void> Function(Map<String, dynamic>) onRename;
 
   @override
   Widget build(BuildContext context) {
@@ -689,13 +728,17 @@ class _TodoRow extends StatelessWidget {
               activeColor: SR.done,
             ),
           ),
+          // 1.9.2: tap the title to edit the Stavka after creation.
           Expanded(
-            child: Text(
-              entry['title'] as String? ?? '',
-              style: TextStyle(
-                fontSize: 13,
-                color: done ? SR.done : SR.text,
-                decoration: done ? TextDecoration.lineThrough : null,
+            child: InkWell(
+              onTap: () => onRename(entry),
+              child: Text(
+                entry['title'] as String? ?? '',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: done ? SR.done : SR.text,
+                  decoration: done ? TextDecoration.lineThrough : null,
+                ),
               ),
             ),
           ),

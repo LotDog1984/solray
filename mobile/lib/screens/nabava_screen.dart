@@ -115,6 +115,42 @@ class _NabavaTabState extends State<NabavaTab> {
     }
   }
 
+  /// 1.9.2: edit a Stavka's text after creation (typo, wrong quantity).
+  /// Works for manual entries (global route) and board entries (board route).
+  Future<void> _rename(Map<String, dynamic> e) async {
+    final ctrl = TextEditingController(text: e['title'] as String? ?? '');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: SR.panel,
+        title: const Text('Uredi stavku'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Naziv stavke'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Odustani')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Spremi')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final title = ctrl.text.trim();
+    if (title.isEmpty) return;
+    try {
+      if (e['board_id'] != null) {
+        await widget.api.patch('/api/boards/${e['board_id']}/todo/${e['id']}', {'title': title});
+      } else {
+        await widget.api.patch('/api/nabava/items/${e['id']}', {'title': title});
+      }
+      await _load();
+      widget.onChanged?.call();
+    } catch (err) {
+      _showError(err);
+    }
+  }
+
   Future<void> _openBoard(Map<String, dynamic> e) async {
     final boardId = e['board_id'] as int?;
     if (boardId == null) return;
@@ -161,7 +197,7 @@ class _NabavaTabState extends State<NabavaTab> {
           ),
           const SizedBox(height: 12),
           for (final e in _entries)
-            NabavaEntryCard(entry: e, onToggle: _toggle, onDelete: _delete, onOpen: _openBoard),
+            NabavaEntryCard(entry: e, onToggle: _toggle, onDelete: _delete, onOpen: _openBoard, onRename: _rename),
           if (_entries.isEmpty && _error == null)
             const Padding(
               padding: EdgeInsets.all(24),
@@ -182,8 +218,8 @@ class _NabavaTabState extends State<NabavaTab> {
 }
 
 /// One aggregated Nabava row (public so tests can exercise it directly):
-/// checkbox + title + tappable origin chip ("📁 Projekt → Ploča") or a muted
-/// "✍️ Ručno dodano" marker for manually added entries + delete.
+/// checkbox + tappable title (tap = edit) + origin chip ("📁 Projekt → Ploča")
+/// or a muted "✍️ Ručno dodano" marker for manually added entries + edit/delete.
 class NabavaEntryCard extends StatelessWidget {
   const NabavaEntryCard({
     super.key,
@@ -191,12 +227,14 @@ class NabavaEntryCard extends StatelessWidget {
     required this.onToggle,
     required this.onDelete,
     required this.onOpen,
+    required this.onRename,
   });
 
   final Map<String, dynamic> entry;
   final Future<void> Function(Map<String, dynamic>) onToggle;
   final Future<void> Function(Map<String, dynamic>) onDelete;
   final Future<void> Function(Map<String, dynamic>) onOpen;
+  final Future<void> Function(Map<String, dynamic>) onRename;
 
   @override
   Widget build(BuildContext context) {
@@ -214,6 +252,9 @@ class NabavaEntryCard extends StatelessWidget {
         side: BorderSide(color: done ? SR.done : SR.line),
       ),
       child: ListTile(
+        // 1.9.2: tapping the row opens the rename dialog (the origin chip
+        // keeps its own tap = open board).
+        onTap: () => onRename(entry),
         leading: Checkbox(
           value: done,
           onChanged: (_) => onToggle(entry),
@@ -242,10 +283,20 @@ class NabavaEntryCard extends StatelessWidget {
                   ),
                 ),
         ),
-        trailing: IconButton(
-          tooltip: 'Obriši',
-          icon: const Icon(Icons.delete_outline, color: Color(0xFFDC2626), size: 20),
-          onPressed: () => onDelete(entry),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: 'Uredi',
+              icon: const Icon(Icons.edit_outlined, color: Color(0xFF93C5FD), size: 20),
+              onPressed: () => onRename(entry),
+            ),
+            IconButton(
+              tooltip: 'Obriši',
+              icon: const Icon(Icons.delete_outline, color: Color(0xFFDC2626), size: 20),
+              onPressed: () => onDelete(entry),
+            ),
+          ],
         ),
       ),
     );

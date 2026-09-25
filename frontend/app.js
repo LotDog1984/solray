@@ -870,7 +870,7 @@ function renderTodoEntries(entries) {
       (e) => `
       <div class="todo-panel-row ${e.is_done ? "is-done" : ""}" data-entry-id="${e.id}">
         <input type="checkbox" class="todo-panel-check" data-entry-id="${e.id}" ${e.is_done ? "checked" : ""} title="Označi kao nabavljeno" />
-        <span class="todo-panel-text">${escapeHtml(e.title)}</span>
+        <button type="button" class="link-btn todo-panel-text" title="Uredi stavku">${escapeHtml(e.title)}</button>
         <button type="button" class="danger todo-panel-del" data-entry-id="${e.id}" title="Obriši stavku">✕</button>
       </div>`
     )
@@ -904,6 +904,26 @@ function bindBoardTodoEvents(board) {
         await loadBoard();
       } catch (error) {
         check.checked = !check.checked;
+        alert(error.message);
+      }
+    };
+  });
+
+  document.querySelectorAll("#boardTodoEntries .todo-panel-text").forEach((btn) => {
+    btn.onclick = async () => {
+      const title = prompt("Uredi stavku:", btn.textContent);
+      if (title === null) return;
+      const cleaned = title.trim();
+      if (!cleaned) {
+        alert("Stavka ne smije biti prazna");
+        return;
+      }
+      try {
+        await api.json(`/api/boards/${board.id}/todo/${btn.closest(".todo-panel-row").dataset.entryId}`, "PATCH", {
+          title: cleaned,
+        });
+        await loadBoard();
+      } catch (error) {
         alert(error.message);
       }
     };
@@ -1377,7 +1397,7 @@ async function renderNabava() {
       <div class="nabava-row ${e.is_done ? "is-done" : ""}" data-entry-id="${e.id}">
         <input type="checkbox" class="nabava-check" data-entry-id="${e.id}" ${e.is_done ? "checked" : ""} title="Označi kao nabavljeno" />
         <div class="nabava-main">
-          <strong class="nabava-title">${escapeHtml(e.title)}</strong>
+          <button type="button" class="nabava-title" data-entry-id="${e.id}" data-board-id="${e.board_id || ""}" title="Uredi stavku">${escapeHtml(e.title)}</button>
           ${
             e.board_id
               ? `<button type="button" class="link-btn nabava-origin" data-board-id="${e.board_id}" title="Otvori ploču">📁 ${escapeHtml(e.project_name || "")} → ${escapeHtml(e.board_name || "")}</button>`
@@ -1400,6 +1420,29 @@ async function renderNabava() {
     </form>
     <div class="nabava-list">${rows || '<div class="muted">Nema stavki za nabavu. Dodajte ih u To-Do popisu na bilo kojoj ploči ili ručno ovdje.</div>'}</div>
   </div>`;
+
+  // 1.9.2: edit a Stavka's text after creation (typos, wrong quantities) —
+  // prompt matches the project/board rename convention. Works for both
+  // manually added and board-origin entries (routes to the right endpoint).
+  const editEntry = async (entryId, boardId, currentTitle) => {
+    const title = prompt("Uredi stavku:", currentTitle);
+    if (title === null) return;
+    const cleaned = title.trim();
+    if (!cleaned) {
+      alert("Stavka ne smije biti prazna");
+      return;
+    }
+    try {
+      if (boardId) {
+        await api.json(`/api/boards/${boardId}/todo/${entryId}`, "PATCH", { title: cleaned });
+      } else {
+        await api.json(`/api/nabava/items/${entryId}`, "PATCH", { title: cleaned });
+      }
+    } catch (error) {
+      alert(error.message);
+    }
+    await renderNabava();
+  };
 
   const addForm = view.querySelector("#nabavaAddForm");
   if (addForm) {
@@ -1443,6 +1486,13 @@ async function renderNabava() {
       const boardId = Number(btn.dataset.boardId);
       if (boardId) openBoard(boardId);
     }; // openBoard also fixes state.project from allBoards()
+  });
+
+  view.querySelectorAll(".nabava-title").forEach((btn) => {
+    btn.onclick = () => {
+      const row = btn.closest(".nabava-row");
+      editEntry(Number(btn.dataset.entryId), btn.dataset.boardId || null, row.querySelector(".nabava-title").textContent);
+    };
   });
 
   view.querySelectorAll(".nabava-del").forEach((btn) => {

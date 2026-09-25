@@ -6,10 +6,11 @@ import 'package:solray/screens/nabava_screen.dart';
 /// Exercises the real NabavaEntryCard (the row the Nabava tab renders) with
 /// canned data — no network involved (API paths are covered by backend e2e).
 void main() {
-  testWidgets('open entry shows title + origin; toggle/delete/open fire', (tester) async {
+  testWidgets('open entry shows title + origin; toggle/delete/rename/open fire', (tester) async {
     var toggled = false;
     var deleted = false;
     var opened = false;
+    var renamed = false;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -26,6 +27,7 @@ void main() {
             onToggle: (_) async { toggled = true; },
             onDelete: (_) async { deleted = true; },
             onOpen: (_) async { opened = true; },
+            onRename: (_) async { renamed = true; },
           ),
         ),
       ),
@@ -37,6 +39,11 @@ void main() {
     await tester.tap(find.byType(Checkbox));
     await tester.pump();
     expect(toggled, isTrue);
+
+    // 1.9.2: the edit pencil and the row tap both trigger rename.
+    await tester.tap(find.byIcon(Icons.edit_outlined));
+    await tester.pump();
+    expect(renamed, isTrue);
 
     await tester.tap(find.byIcon(Icons.delete_outline));
     await tester.pump();
@@ -63,6 +70,7 @@ void main() {
             onToggle: (_) async {},
             onDelete: (_) async {},
             onOpen: (_) async {},
+            onRename: (_) async {},
           ),
         ),
       ),
@@ -76,6 +84,7 @@ void main() {
 
   testWidgets('1.9.0: manually added entry shows ✍️ marker, not origin chip', (tester) async {
     var deleted = false;
+    var renamed = false;
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -91,6 +100,7 @@ void main() {
             onToggle: (_) async {},
             onDelete: (_) async { deleted = true; },
             onOpen: (_) async {},
+            onRename: (_) async { renamed = true; },
           ),
         ),
       ),
@@ -104,5 +114,10 @@ void main() {
     await tester.tap(find.byIcon(Icons.delete_outline));
     await tester.pump();
     expect(deleted, isTrue);
+
+    // 1.9.2: manual entries are editable too (edit icon on every row).
+    await tester.tap(find.byIcon(Icons.edit_outlined));
+    await tester.pump();
+    expect(renamed, isTrue);
   });
 }
