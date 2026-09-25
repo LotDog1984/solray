@@ -1091,3 +1091,20 @@ textarea {
 .sidebar .notif-btn {
   margin-top: 8px;
 }
+
+/* 1.9.0: manual add form in the global Nabava view */
+.nabava-add-row {
+  margin-top: 10px;
+}
+
+.nabava-add-row button {
+  flex: 0 0 auto;
+}
+
+.nabava-origin {
+  font-size: 12px;
+}
+
+span.nabava-origin {
+  cursor: default;
+}

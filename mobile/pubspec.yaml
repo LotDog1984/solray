@@ -1,7 +1,7 @@
 name: solray
 description: SolRay mobile client — connects to any SolRay instance by URL.
 publish_to: "none"
-version: 1.8.0+5
+version: 1.9.0+6
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

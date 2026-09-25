@@ -1375,12 +1375,16 @@ async function renderNabava() {
     .map(
       (e) => `
       <div class="nabava-row ${e.is_done ? "is-done" : ""}" data-entry-id="${e.id}">
-        <input type="checkbox" class="nabava-check" data-entry-id="${e.id}" data-board-id="${e.board_id}" ${e.is_done ? "checked" : ""} title="Označi kao nabavljeno" />
+        <input type="checkbox" class="nabava-check" data-entry-id="${e.id}" ${e.is_done ? "checked" : ""} title="Označi kao nabavljeno" />
         <div class="nabava-main">
           <strong class="nabava-title">${escapeHtml(e.title)}</strong>
-          <button type="button" class="link-btn nabava-origin" data-board-id="${e.board_id}" title="Otvori ploču">📁 ${escapeHtml(e.project_name || "")} → ${escapeHtml(e.board_name || "")}</button>
+          ${
+            e.board_id
+              ? `<button type="button" class="link-btn nabava-origin" data-board-id="${e.board_id}" title="Otvori ploču">📁 ${escapeHtml(e.project_name || "")} → ${escapeHtml(e.board_name || "")}</button>`
+              : `<span class="nabava-origin muted" title="Dodano ručno u ovom popisu">✍️ Ručno dodano</span>`
+          }
         </div>
-        <button type="button" class="danger nabava-del" data-entry-id="${e.id}" data-board-id="${e.board_id}" title="Obriši stavku">✕</button>
+        <button type="button" class="danger nabava-del" data-entry-id="${e.id}" data-board-id="${e.board_id || ""}" title="Obriši stavku">✕</button>
       </div>`
     )
     .join("");
@@ -1389,19 +1393,43 @@ async function renderNabava() {
       <h2 style="margin:0;">🛒 ${escapeHtml(name)}</h2>
       <small class="muted">${openCount ? `${openCount} za nabaviti` : "Sve nabavljeno 🎉"}</small>
     </div>
-    <p class="muted" style="font-size:13px;margin:6px 0 0 0;">Zajednički popis svih stavki za nabavu iz svih ploča. Svaka stavka nosi projekt i ploču u kojoj je nastala.</p>
-    <div class="nabava-list">${rows || '<div class="muted">Nema stavki za nabavu. Dodajte ih u To-Do popisu na bilo kojoj ploči.</div>'}</div>
+    <p class="muted" style="font-size:13px;margin:6px 0 0 0;">Zajednički popis svih stavki za nabavu iz svih ploča. Svaka stavka nosi projekt i ploču u kojoj je nastala, a ovdje ih možete i ručno dodati.</p>
+    <form id="nabavaAddForm" class="row nabava-add-row">
+      <input name="title" placeholder="Dodaj stavku ručno…" maxlength="255" required />
+      <button type="submit" class="primary">Dodaj</button>
+    </form>
+    <div class="nabava-list">${rows || '<div class="muted">Nema stavki za nabavu. Dodajte ih u To-Do popisu na bilo kojoj ploči ili ručno ovdje.</div>'}</div>
   </div>`;
+
+  const addForm = view.querySelector("#nabavaAddForm");
+  if (addForm) {
+    addForm.onsubmit = async (event) => {
+      event.preventDefault();
+      const title = new FormData(addForm).get("title").trim();
+      if (!title) return;
+      try {
+        await api.json("/api/nabava/items", "POST", { title });
+        await renderNabava();
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+  }
 
   view.querySelectorAll(".nabava-check").forEach((check) => {
     check.onchange = async () => {
       const row = check.closest(".nabava-row");
       const title = row.querySelector(".nabava-title").textContent;
+      const boardId = row.querySelector(".nabava-origin").dataset.boardId || null;
       try {
-        await api.json(`/api/boards/${check.dataset.boardId}/todo/${check.dataset.entryId}`, "PATCH", {
-          title,
-          is_done: check.checked,
-        });
+        if (boardId) {
+          await api.json(`/api/boards/${boardId}/todo/${check.dataset.entryId}`, "PATCH", {
+            title,
+            is_done: check.checked,
+          });
+        } else {
+          await api.json(`/api/nabava/items/${check.dataset.entryId}`, "PATCH", { is_done: check.checked });
+        }
         await renderNabava();
       } catch (error) {
         check.checked = !check.checked;
@@ -1420,7 +1448,11 @@ async function renderNabava() {
   view.querySelectorAll(".nabava-del").forEach((btn) => {
     btn.onclick = async () => {
       try {
-        await api.request(`/api/boards/${btn.dataset.boardId}/todo/${btn.dataset.entryId}`, { method: "DELETE" });
+        if (btn.dataset.boardId) {
+          await api.request(`/api/boards/${btn.dataset.boardId}/todo/${btn.dataset.entryId}`, { method: "DELETE" });
+        } else {
+          await api.request(`/api/nabava/items/${btn.dataset.entryId}`, { method: "DELETE" });
+        }
         await renderNabava();
       } catch (error) {
         alert(error.message);

@@ -153,7 +153,9 @@ class TodoList(Base):
     __tablename__ = "todo_lists"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    board_id: Mapped[int] = mapped_column(ForeignKey("boards.id", ondelete="CASCADE"), unique=True)
+    # 1.9.0: board_id is NULL for the single global list that holds Nabava
+    # entries added manually in the global view (not tied to any board).
+    board_id: Mapped[int | None] = mapped_column(ForeignKey("boards.id", ondelete="CASCADE"), unique=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     entries: Mapped[list["TodoEntry"]] = relationship(cascade="all, delete-orphan", order_by="TodoEntry.position")
 
@@ -277,6 +279,14 @@ class TaskMoveIn(BaseModel):
 class TodoEntryIn(BaseModel):
     title: str
     is_done: bool = False
+
+
+class NabavaItemIn(BaseModel):
+    """1.9.0: partial update of a manually added Nabava entry (title and/or
+    is_done — both optional, unlike the board-scoped TodoEntryIn)."""
+
+    title: str | None = None
+    is_done: bool | None = None
 
 
 class NtfyIn(BaseModel):
@@ -568,6 +578,9 @@ def startup() -> None:
         conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ NULL"))
         # 1.4.0: files organized per project
         conn.execute(text("ALTER TABLE files ADD COLUMN IF NOT EXISTS project_id INTEGER"))
+        # 1.9.0: todo_lists.board_id becomes nullable — the global list (NULL)
+        # holds Nabava entries added manually in the global view.
+        conn.execute(text("ALTER TABLE todo_lists ALTER COLUMN board_id DROP NOT NULL"))
     # Backfill: put every existing board into a default project so nothing is lost.
     db = SessionLocal()
     try:
@@ -596,6 +609,15 @@ def startup() -> None:
         )
         if boards_needing_todo:
             db.add_all(TodoList(board_id=board_id) for board_id in boards_needing_todo)
+            db.commit()
+        # 1.9.0: make sure the global manual-entry list exists (one row with
+        # board_id NULL); created lazily by the API afterwards anyway.
+        global_todo_count = (
+            db.execute(select(func.count()).select_from(TodoList).where(TodoList.board_id.is_(None)))
+            .scalar()
+        )
+        if not global_todo_count:
+            db.add(TodoList(board_id=None))
             db.commit()
     finally:
         db.close()
@@ -1350,14 +1372,27 @@ def ensure_todo_list(db: Session, board: Board) -> TodoList:
     return todo
 
 
-def serialize_nabava_row(entry: TodoEntry, todo: TodoList, board: Board, project: Project | None) -> dict:
+def get_global_todo_list(db: Session) -> TodoList:
+    """1.9.0: the single global list (board_id IS NULL) that holds Nabava
+    entries added manually in the global view. Created lazily."""
+    todo = db.scalar(select(TodoList).where(TodoList.board_id.is_(None)))
+    if todo is None:
+        todo = TodoList(board_id=None)
+        db.add(todo)
+        db.flush()
+        db.refresh(todo)
+    return todo
+
+
+def serialize_nabava_row(entry: TodoEntry, todo: TodoList, board: Board | None, project: Project | None) -> dict:
     """One aggregated Nabava row — origin info lets the user see which project
-    and board a Stavka belongs to."""
+    and board a Stavka belongs to. board is None for manually added entries
+    (1.9.0: they live in the global list, not on any board)."""
     return {
         "id": entry.id,
         "todo_list_id": todo.id,
-        "board_id": board.id,
-        "board_name": board.name,
+        "board_id": board.id if board else None,
+        "board_name": board.name if board else "",
         "project_id": project.id if project else None,
         "project_name": project.name if project else "",
         "title": entry.title,
@@ -1371,10 +1406,12 @@ def serialize_nabava_row(entry: TodoEntry, todo: TodoList, board: Board, project
 def get_nabava(db: Db, user: CurrentUser):
     """All Stavke from every board's To-Do list in one list — open first
     (oldest first), done at the bottom (newest completion first)."""
+    # 1.9.0: outer join — manually added entries live in a global list whose
+    # board_id is NULL, so they must survive the Board join.
     rows = db.execute(
         select(TodoEntry, TodoList, Board, Project)
         .join(TodoList, TodoEntry.todo_list_id == TodoList.id)
-        .join(Board, TodoList.board_id == Board.id)
+        .outerjoin(Board, TodoList.board_id == Board.id)
         .outerjoin(Project, Board.project_id == Project.id)
         .order_by(TodoEntry.is_done, TodoEntry.created_at)
     ).all()
@@ -1425,6 +1462,60 @@ def delete_todo_entry(board_id: int, entry_id: int, db: Db, user: CurrentUser):
     db.delete(entry)
     db.commit()
     notify_change("board", board_id)
+    notify_change("nabava")
+    return {"ok": True}
+
+
+# ---------------- 1.9.0: manually adding items in the global Nabava view ----------------
+
+
+def _global_todo_entry_or_404(db: Session, entry_id: int) -> TodoEntry:
+    """Fetch an entry, ensuring it belongs to the global (manual) list —
+    board entries keep their board-scoped routes."""
+    todo = get_global_todo_list(db)
+    entry = db.get(TodoEntry, entry_id)
+    if not entry or entry.todo_list_id != todo.id:
+        raise HTTPException(status_code=404, detail="Stavka ne postoji")
+    return entry
+
+
+@app.post("/api/nabava/items")
+def add_nabava_item(payload: TodoEntryIn, db: Db, user: CurrentUser):
+    """Add a Stavka manually in the global Nabava list — not tied to any board."""
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Stavka ne smije biti prazna")
+    todo = get_global_todo_list(db)
+    position = db.scalar(select(func.max(TodoEntry.position)).where(TodoEntry.todo_list_id == todo.id)) or 0
+    entry = TodoEntry(todo_list_id=todo.id, title=title[:255], is_done=False, position=position + 1)
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    notify_change("nabava")
+    return {"id": entry.id, "title": entry.title, "is_done": entry.is_done, "position": entry.position}
+
+
+@app.patch("/api/nabava/items/{entry_id}")
+def update_nabava_item(entry_id: int, payload: NabavaItemIn, db: Db, user: CurrentUser):
+    """Tick or rename a manually added Nabava entry (only manual entries)."""
+    entry = _global_todo_entry_or_404(db, entry_id)
+    if payload.title is not None:
+        title = payload.title.strip()
+        if title:
+            entry.title = title[:255]
+    if payload.is_done is not None:
+        entry.is_done = payload.is_done
+    db.commit()
+    notify_change("nabava")
+    return {"ok": True}
+
+
+@app.delete("/api/nabava/items/{entry_id}")
+def delete_nabava_item(entry_id: int, db: Db, user: CurrentUser):
+    """Delete a manually added Nabava entry (only manual entries)."""
+    entry = _global_todo_entry_or_404(db, entry_id)
+    db.delete(entry)
+    db.commit()
     notify_change("nabava")
     return {"ok": True}
 

@@ -85,6 +85,36 @@ class _NabavaTabState extends State<NabavaTab> {
     }
   }
 
+  Future<void> _addManual() async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: SR.panel,
+        title: const Text('Nova stavka (ručno)'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'npr. Vijci 6x60 (fali 50 kom)'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Odustani')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Dodaj')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final title = ctrl.text.trim();
+    if (title.isEmpty) return;
+    try {
+      await widget.api.post('/api/nabava/items', {'title': title});
+      await _load();
+      widget.onChanged?.call();
+    } catch (err) {
+      _showError(err);
+    }
+  }
+
   Future<void> _openBoard(Map<String, dynamic> e) async {
     final boardId = e['board_id'] as int?;
     if (boardId == null) return;
@@ -120,8 +150,14 @@ class _NabavaTabState extends State<NabavaTab> {
           ),
           const SizedBox(height: 4),
           const Text(
-            'Zajednički popis svih stavki za nabavu iz svih ploča. Svaka stavka nosi projekt i ploču u kojoj je nastala — dodajete ih u To-Do popisu na ploči.',
+            'Zajednički popis svih stavki za nabavu iz svih ploča. Svaka stavka nosi projekt i ploču u kojoj je nastala — dodajete ih u To-Do popisu na ploči ili ručno ovdje.',
             style: TextStyle(color: SR.muted, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _addManual,
+            icon: const Icon(Icons.add),
+            label: const Text('Dodaj stavku ručno'),
           ),
           const SizedBox(height: 12),
           for (final e in _entries)
@@ -130,7 +166,7 @@ class _NabavaTabState extends State<NabavaTab> {
             const Padding(
               padding: EdgeInsets.all(24),
               child: Text(
-                'Nema stavki za nabavu. Dodajte ih u To-Do popisu na bilo kojoj ploči.',
+                'Nema stavki za nabavu. Dodajte ih u To-Do popisu na bilo kojoj ploči ili ručno ovdje.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: SR.muted),
               ),
@@ -146,7 +182,8 @@ class _NabavaTabState extends State<NabavaTab> {
 }
 
 /// One aggregated Nabava row (public so tests can exercise it directly):
-/// checkbox + title + tappable origin chip ("📁 Projekt → Ploča") + delete.
+/// checkbox + title + tappable origin chip ("📁 Projekt → Ploča") or a muted
+/// "✍️ Ručno dodano" marker for manually added entries + delete.
 class NabavaEntryCard extends StatelessWidget {
   const NabavaEntryCard({
     super.key,
@@ -166,6 +203,9 @@ class NabavaEntryCard extends StatelessWidget {
     final done = entry['is_done'] as bool? ?? false;
     final project = entry['project_name'] as String? ?? '';
     final board = entry['board_name'] as String? ?? '';
+    // 1.9.0: entries added manually in this list have no board — show a
+    // muted "✍️ Ručno dodano" marker instead of the tappable origin chip.
+    final manual = entry['board_id'] == null;
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       color: done ? const Color(0x2422C55E) : SR.panelDeep,
@@ -189,13 +229,18 @@ class NabavaEntryCard extends StatelessWidget {
         ),
         subtitle: Padding(
           padding: const EdgeInsets.only(top: 2),
-          child: InkWell(
-            onTap: () => onOpen(entry),
-            child: Text(
-              '📁 ${project.isNotEmpty ? '$project → ' : ''}$board',
-              style: const TextStyle(color: Color(0xFF93C5FD), fontSize: 12),
-            ),
-          ),
+          child: manual
+              ? const Text(
+                  '✍️ Ručno dodano',
+                  style: TextStyle(color: SR.muted, fontSize: 12),
+                )
+              : InkWell(
+                  onTap: () => onOpen(entry),
+                  child: Text(
+                    '📁 ${project.isNotEmpty ? '$project → ' : ''}$board',
+                    style: const TextStyle(color: Color(0xFF93C5FD), fontSize: 12),
+                  ),
+                ),
         ),
         trailing: IconButton(
           tooltip: 'Obriši',

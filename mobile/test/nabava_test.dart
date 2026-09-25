@@ -73,4 +73,36 @@ void main() {
     // No project part in the origin chip when project_name is empty
     expect(find.text('📁 Spavaća soba'), findsOneWidget);
   });
+
+  testWidgets('1.9.0: manually added entry shows ✍️ marker, not origin chip', (tester) async {
+    var deleted = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: NabavaEntryCard(
+            entry: const {
+              'id': 9,
+              'board_id': null,
+              'title': 'Silikon za kupaonicu',
+              'is_done': false,
+              'project_name': '',
+              'board_name': '',
+            },
+            onToggle: (_) async {},
+            onDelete: (_) async { deleted = true; },
+            onOpen: (_) async {},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Silikon za kupaonicu'), findsOneWidget);
+    expect(find.text('✍️ Ručno dodano'), findsOneWidget);
+    expect(find.textContaining('📁'), findsNothing); // no tappable origin chip
+    expect(find.text('📁 Remete → Kuhinja'), findsNothing);
+
+    await tester.tap(find.byIcon(Icons.delete_outline));
+    await tester.pump();
+    expect(deleted, isTrue);
+  });
 }
