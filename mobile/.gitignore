@@ -8,9 +8,9 @@ build/
 # Android
 android/.gradle/
 android/local.properties
-android/key.properties
-android/app/*.jks
-android/app/*.keystore
+# 1.9.1: android/key.properties + the release keystore are COMMITTED (stable
+# signing key so in-app updates install over the previous release) — the
+# ignores that used to hide them from git were removed on purpose.
 *.iml
 
 # Generated platform scaffolding that CI (flutter create) will regenerate.

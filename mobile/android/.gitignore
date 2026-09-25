@@ -6,8 +6,8 @@ gradle-wrapper.jar
 /local.properties
 GeneratedPluginRegistrant.java
 
-# Remember to never publicly share your keystore.
+# 1.9.1: the release keystore + key.properties are COMMITTED on purpose so
+# every CI build signs with the same stable key — Android refuses to install
+# an update signed with a different key, which broke the in-app updater.
+# Rotate + move to GitHub Secrets before any Play Store release.
 # See https://flutter.dev/to/reference-keystore
-key.properties
-**/*.keystore
-**/*.jks

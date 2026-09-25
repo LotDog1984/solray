@@ -15,8 +15,10 @@ if (localPropertiesFile.exists()) {
 def flutterVersionCode = localProperties.getProperty('flutter.versionCode') ?: '1'
 def flutterVersionName = localProperties.getProperty('flutter.versionName') ?: '1.0'
 
-// Signing: CI writes android/key.properties (storeFile, storePassword,
-// keyAlias, keyPassword) before building; local builds fall back to debug signing.
+// 1.9.1: signing — the release keystore + key.properties are COMMITTED so
+// every build (local and CI) signs with the same stable key. Android refuses
+// to install an update over an app signed with a different key, which broke
+// the in-app updater when CI generated a fresh key per release.
 def keystoreProps = new Properties()
 def keystorePropsFile = rootProject.file('key.properties')
 def hasKeystore = false
@@ -62,8 +64,9 @@ android {
 
     buildTypes {
         release {
-            // Signed with the CI-provided (or generated) keystore when present;
-            // otherwise fall back to debug signing so local builds never fail.
+            // Signed with the committed release keystore via key.properties;
+            // falls back to debug signing only when key.properties is missing
+            // (fresh clone without the committed files / debug builds).
             signingConfig hasKeystore ? signingConfigs.release : signingConfigs.debug
             minifyEnabled false
             shrinkResources false

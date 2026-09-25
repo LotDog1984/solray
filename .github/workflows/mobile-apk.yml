@@ -42,7 +42,12 @@ jobs:
         working-directory: mobile
         run: |
           V="${{ steps.ver.outputs.version }}"
-          sed -i "s/^version: .*/version: ${V}+1/" pubspec.yaml
+          # versionCode must never go backwards between releases; derive it
+          # from the build date so it is strictly monotonic (the old "+1"
+          # kept versionCode at 1 for every release).
+          CODE=$(date +%Y%m%d)
+          sed -i "s/^version: .*/version: ${V}+${CODE}/" pubspec.yaml
+          grep "^version:" pubspec.yaml
 
       - name: Generate missing android platform files (idempotent)
         working-directory: mobile
@@ -56,39 +61,36 @@ jobs:
         working-directory: mobile
         run: flutter analyze
 
-      - name: Prepare signing key (secrets, or generate a build key)
+      - name: Verify committed signing key (stable across releases)
         working-directory: mobile/android
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > app/solray-release.jks
-            cat > key.properties <<EOF
-          storeFile=app/solray-release.jks
-          storePassword=$ANDROID_KEYSTORE_PASSWORD
-          keyAlias=$ANDROID_KEY_ALIAS
-          keyPassword=$ANDROID_KEY_PASSWORD
-          EOF
-          else
-            # No secrets configured yet: generate a key so the build still works.
-            # Replace with real secrets before shipping to the Play Store.
-            keytool -genkeypair -v -keystore app/solray-release.jks -keyalg RSA -keysize 2048 \
-              -validity 10000 -alias solray -storepass solray123 -keypass solray123 \
-              -dname "CN=SolRay, OU=Dev, O=SolRay, L=Zagreb, C=HR"
-            cat > key.properties <<EOF
-          storeFile=app/solray-release.jks
-          storePassword=solray123
-          keyAlias=solray
-          keyPassword=solray123
-          EOF
-          fi
+          # 1.9.1: the release keystore is COMMITTED (app/solray-release.jks
+          # + key.properties), so every build — local and CI — signs with the
+          # same stable key. Never generate a per-build key here again:
+          # Android refuses to install an update over an app signed with a
+          # different key, which is exactly what broke the in-app updater
+          # before 1.9.1 (every release rolled a fresh random key).
+          test -f app/solray-release.jks || { echo "::error::committed keystore app/solray-release.jks is missing"; exit 1; }
+          test -f key.properties || { echo "::error::committed key.properties is missing"; exit 1; }
+          keytool -list -keystore app/solray-release.jks -storepass solray123 >/dev/null
 
       - name: Build release APK
         working-directory: mobile
         run: flutter build apk --release
+
+      - name: Assert APK is signed with the stable release key
+        run: |
+          # Hard gate: if the signature ever drifts from the committed key,
+          # fail the release instead of shipping an APK that phones would
+          # refuse to install over the previous version.
+          STAMP=$(keytool -printcert -jarfile mobile/build/app/outputs/flutter-apk/app-release.apk 2>/dev/null | grep -m1 'SHA256')
+          EXPECTED='A7:87:62:6E:F4:10:98:29:E3:CE:6B:C5:6E:C0:A1:88:4A:08:C9:E6:0E:1C:2E:EC:FD:E4:F9:1F:ED:37:23:9E'
+          echo "APK:      $STAMP"
+          echo "Expected: SHA-256: $EXPECTED"
+          case "$STAMP" in
+            *"$EXPECTED"*) echo "Signature OK — updates will install over previous releases.";;
+            *) echo "::error::APK is NOT signed with the stable release key — in-app update would break"; exit 1;;
+          esac
 
       - name: Rename APK
         run: |

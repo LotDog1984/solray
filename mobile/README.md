@@ -23,17 +23,15 @@ on first run (onboarding) — nothing is baked into the binary.
 
 You never build locally — **GitHub Actions** does it: every `v*` tag produces a
 signed APK attached to the GitHub Release (`.github/workflows/mobile-apk.yml`).
-The signing key lives in repo secrets; the workflow generates a throwaway
-debug-grade key for test builds if secrets are absent.
 
-One-time setup for real release signing (repo owner):
-
-```bash
-keytool -genkey -v -keystore solray-release.jks -keyalg RSA -keysize 2048 \
-  -validity 10000 -alias solray
-# then base64-encode and add repo secrets:
-#   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
-```
+Signing (since 1.9.1): the release keystore `android/app/solray-release.jks`
+and `android/key.properties` are **committed to the repo** so every build —
+local and CI — signs with the same stable key. Android refuses to install an
+update over an app signed with a different key, which is why pre-1.9.1
+releases (random per-build CI key) could not update in place. CI asserts the
+APK's SHA-256 certificate fingerprint and fails the release if it ever drifts.
+⚠️ Never lose or regenerate this keystore: users would have to uninstall and
+reinstall. Rotate + move to GitHub Secrets before any Play Store release.
 
 ## Development (optional — CI covers releases)
 
