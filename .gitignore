@@ -40,6 +40,9 @@ logs/
 
 # Test/debug artifacts (not part of the app)
 *.png
+# ...except the launcher-icon source artwork (processed + committed on purpose;
+# CI regenerates all mipmap sizes from it via flutter_launcher_icons)
+!mobile/assets/icon/*.png
 debug-*.js
 final-*.js
 manual-browser-test.js

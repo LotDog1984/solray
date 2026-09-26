@@ -1,7 +1,25 @@
-# Android launcher icons — how to replace the app icon
+# Android launcher icons — the app icon
 
 The icon is generated from **one source image**; the `mipmap-*` folders are
 generated artifacts and are never edited by hand.
+
+## Current icon (the "My Team" artwork)
+
+- `app_icon_source.png` — the original 1254×1254 artwork as received
+  (white background, squircle logo).
+- `app_icon.png` — 1024×1024, white outer background removed (flood-filled
+  from the image border only, so the white checkmark inside survives) with
+  transparent corners.
+- `app_icon_foreground.png` — the adaptive-icon foreground layer: the same
+  artwork scaled to ~68% of the canvas so it stays inside the launcher's
+  mask safe zone.
+- Adaptive background color: `#070C20`, sampled from the artwork's squircle
+  edge — the circle/squircle mask blends seamlessly into it.
+
+To swap in a different icon later, replace `app_icon_source.png` and rerun
+the processing (or just drop a ready 1024×1024 `app_icon.png` + optional
+`app_icon_foreground.png` and adjust the background color in
+`flutter_launcher_icons.yaml`).
 
 ## How to ship a new icon (drop-in, no tooling needed)
 

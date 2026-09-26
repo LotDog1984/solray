@@ -3,8 +3,9 @@
 flutter_launcher_icons:
   image_path: "assets/icon/app_icon.png"
   # Adaptive icon (Android 8+): your artwork as the foreground layer over a
-  # solid background (the app's dark-blue sidebar color).
-  adaptive_icon_background: "#0F172A"
+  # solid background sampled from the artwork's own squircle edge (#070C20),
+  # so the mask-cropped edges blend seamlessly into the background.
+  adaptive_icon_background: "#070C20"
   adaptive_icon_foreground: "assets/icon/app_icon_foreground.png"
   # Legacy (pre-Android 8) square icons for every density.
   android: true
