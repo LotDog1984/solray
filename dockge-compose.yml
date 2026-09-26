@@ -1,13 +1,21 @@
 # =============================================================================
-#  SolRay — Dockge stack (paste-and-deploy)
+#  SolRay — Dockge stack (paste-and-deploy) — preset for THIS server
 # =============================================================================
 #  HOW TO DEPLOY (in the Dockge web UI):
 #    1. Create a new stack named "solray".
 #    2. Paste THIS ENTIRE FILE into the compose editor.
 #    3. EDIT the lines marked  <<< EDIT  — the secrets/settings block right
-#       below this header, plus the app port in the frontend section.
+#       below this header. Everything else (ports, paths) is already preset
+#       for this server and needs no changes.
 #    4. Hit  Deploy.  Images are pulled from GitHub's container registry
 #       automatically — nothing is cloned or built on the server.
+#
+#  Server-specific values already baked in below (do not change these unless
+#  the server setup changes):
+#    - app data (db, ntfy cache, FCM key):  /mnt/docker/apps/solray/data/…
+#    - uploaded files (fast SSD app dir → NAS storage): /mnt/nas/solray
+#    - frontend port:  9996   (open http://<server-ip>:9996)
+#    - ntfy port:      8084   (phone notifications)
 #
 #  UPDATING LATER: every code change is released as a new version (the
 #  version lives in the repo's VERSION file, and new images are pushed to
@@ -18,16 +26,14 @@
 #    3. hit  Update  in Dockge
 #  (Alternatively use tag :latest to always get the newest build.)
 #
-#  Data (database, uploaded files, notifications) is stored under
-#  /mnt/docker/apps/solray/data/ and survives updates and restarts.
-#  (Ports and volume paths are examples — customize them freely for your
-#  server; only the two image version lines need bumping on updates.)
+#  Data (database, notifications) is stored under /mnt/docker/apps/solray/data/
+#  and uploaded files under /mnt/nas/solray — all survive updates and restarts.
 #
 #  First run: open the app URL and register — the first account becomes
 #  the admin and registration closes automatically afterwards.
 #
 #  VERSION HISTORY: see PROJECT.md in the repo (version log section).
-#  Deployed version below = 1.0.0 (base release).
+#  Deployed version below = 1.12.2 (FCM push + push diagnostic).
 # =============================================================================
 
 name: solray
@@ -36,14 +42,12 @@ name: solray
 x-app-env: &app-env
   POSTGRES_PASSWORD: change-this-to-a-long-random-password  # <<< EDIT (1) database password (any long random string)
   JWT_SECRET: change-this-to-a-longer-random-secret         # <<< EDIT (2) login-token signing secret (long random string)
-  CORS_ORIGINS: http://192.168.1.50:9998                    # <<< EDIT (3) the EXACT URL you open the app in the browser (http://IP-or-domain:PORT)
-  NTFY_BASE_URL: http://192.168.1.50:8082                   # <<< EDIT (4) same host as (3), port 8082 (phone notifications)
-  NTFY_PUBLIC_URL: https://ntfy.example.com                 # <<< EDIT (5) public https ntfy address for the MOBILE APP (your nginx domain)
-  # 1.12.0 FCM push (optional, real Google push for the mobile app):
-  # after setting up a Firebase project (see PROJECT.md) uncomment the next
-  # two lines and the volume line in the backend service below.
-  # FCM_PROJECT_ID: your-firebase-project-id
-  # GOOGLE_APPLICATION_CREDENTIALS: /secrets/fcm.json
+  CORS_ORIGINS: http://192.168.1.50:9996                    # <<< EDIT (3) the EXACT URL you open the app in the browser — preset to server IP 192.168.1.50 + port 9996; change ONLY if the server IP is different
+  NTFY_BASE_URL: http://192.168.1.50:8084                   # <<< EDIT (4) same host as (3), port 8084 (phone notifications) — same "only if IP differs" rule
+  NTFY_PUBLIC_URL: https://ntfy.example.com                 # <<< EDIT (5) public https ntfy address for the MOBILE APP (your nginx domain); only matters if the phone should push via ntfy instead of FCM
+  # 1.12.0 FCM push (real Google push for the mobile app):
+  FCM_PROJECT_ID: studio-1075888381-e31b1                   # Firebase project ID (preset)
+  GOOGLE_APPLICATION_CREDENTIALS: /secrets/fcm.json
 # ------------------------------------------------------------------------------
 
 services:
@@ -64,7 +68,7 @@ services:
       retries: 5
 
   backend:
-    image: ghcr.io/lotdog1984/solray-backend:1.0.0      # <<< bump version when updating
+    image: ghcr.io/lotdog1984/solray-backend:1.12.2      # <<< bump version when updating
     restart: unless-stopped
     environment:
       <<: *app-env
@@ -73,10 +77,11 @@ services:
       STORAGE_DIR: /data/uploads
       NTFY_URL: http://ntfy:80
     volumes:
-      - /mnt/docker/apps/solray/data/uploads:/data/uploads
-      # FCM push (1.12.0): drop the service-account JSON on the server and
-      # uncomment, together with the two env lines in the block above:
-      # - /mnt/docker/apps/solray/data/fcm-service-account.json:/secrets/fcm.json:ro
+      # uploaded files live on the NAS:
+      - /mnt/nas/solray:/data/uploads
+      # FCM push (1.12.0) — the service-account JSON must exist at this
+      # server path (copied already); pairs with FCM_PROJECT_ID above:
+      - /mnt/docker/apps/solray/data/fcm-service-account.json:/secrets/fcm.json:ro
     depends_on:
       db:
         condition: service_healthy
@@ -84,10 +89,10 @@ services:
         condition: service_started
 
   frontend:
-    image: ghcr.io/lotdog1984/solray-frontend:1.0.0     # <<< bump version when updating
+    image: ghcr.io/lotdog1984/solray-frontend:1.12.2     # <<< bump version when updating
     restart: unless-stopped
     ports:
-      - "9998:80"          # <<< EDIT (5) host port for the app (left side)
+      - "9996:80"          # host port for the app (preset for this server)
     depends_on:
       - backend
 
@@ -101,4 +106,4 @@ services:
     volumes:
       - /mnt/docker/apps/solray/data/ntfy:/var/cache/ntfy
     ports:
-      - "8082:80"          # phone-notification port (rarely needs changing)
+      - "8084:80"          # phone-notification port (preset for this server)
