@@ -11,7 +11,7 @@ class Notifications {
   static const _kEnabled = 'solray_notif_enabled';
   static const _kAsked = 'solray_notif_asked';
   static const _channelId = 'solray';
-  static const _channelName = 'SolRay obavijesti';
+  static const _channelName = 'My Team obavijesti';
 
   /// Initialize the plugin; returns the payload of a notification that
   /// launched the app (cold start), or null.
@@ -32,7 +32,7 @@ class Notifications {
       await android?.createNotificationChannel(const AndroidNotificationChannel(
         _channelId,
         _channelName,
-        description: 'Tagovi i nove obavijesti iz SolRaya',
+        description: 'Tagovi i nove obavijesti iz My Team',
         importance: Importance.high,
       ));
       final launch = await _plugin.getNotificationAppLaunchDetails();
@@ -93,7 +93,7 @@ class Notifications {
         android: AndroidNotificationDetails(
           _channelId,
           _channelName,
-          channelDescription: 'Tagovi i nove obavijesti iz SolRaya',
+          channelDescription: 'Tagovi i nove obavijesti iz My Team',
           importance: Importance.high,
           priority: Priority.high,
         ),

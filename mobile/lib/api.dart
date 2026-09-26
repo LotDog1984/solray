@@ -6,7 +6,7 @@ import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-/// Client for one SolRay instance. The base URL is NEVER baked in — it comes
+/// Client for one My Team instance. The base URL is NEVER baked in — it comes
 /// from the onboarding screen (first run) or stored preferences.
 class Api {
   /// [client] is injectable for tests (MockClient); production uses a shared
@@ -29,7 +29,7 @@ class Api {
   Future<Map<String, dynamic>> settings() async {
     final res = await _client.get(_u('/api/settings')).timeout(const Duration(seconds: 12));
     if (res.statusCode != 200) {
-      throw Exception('Poslužitelj nije SolRay (HTTP ${res.statusCode})');
+      throw Exception('Poslužitelj nije My Team (HTTP ${res.statusCode})');
     }
     return jsonDecode(res.body) as Map<String, dynamic>;
   }

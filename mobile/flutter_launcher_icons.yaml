@@ -1,0 +1,13 @@
+# flutter_launcher_icons config — see assets/icon/README.md
+# Regenerate with: dart run flutter_launcher_icons  (or let CI do it)
+flutter_launcher_icons:
+  image_path: "assets/icon/app_icon.png"
+  # Adaptive icon (Android 8+): your artwork as the foreground layer over a
+  # solid background (the app's dark-blue sidebar color).
+  adaptive_icon_background: "#0F172A"
+  adaptive_icon_foreground: "assets/icon/app_icon_foreground.png"
+  # Legacy (pre-Android 8) square icons for every density.
+  android: true
+  ios: false
+  remove_alpha_ios: false
+  min_sdk_android: 21

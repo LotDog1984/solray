@@ -72,6 +72,19 @@ jobs:
         working-directory: mobile
         run: flutter pub get
 
+      # Regenerate launcher icons from the committed source artwork
+      # (mobile/assets/icon/app_icon.png). Runs AFTER pub get (the generator
+      # is a dev dependency) and BEFORE analyze/build. Skipped when no source
+      # icon is committed, so builds without artwork keep working unchanged.
+      - name: Generate launcher icons
+        working-directory: mobile
+        run: |
+          if [ -f assets/icon/app_icon.png ]; then
+            dart run flutter_launcher_icons
+          else
+            echo "::notice::mobile/assets/icon/app_icon.png not committed — keeping existing launcher icons"
+          fi
+
       - name: Analyze
         working-directory: mobile
         run: flutter analyze

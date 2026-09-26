@@ -33,8 +33,9 @@
 #  the admin and registration closes automatically afterwards.
 #
 #  VERSION HISTORY: see PROJECT.md in the repo (version log section).
-#  Deployed version below = 1.12.4 (FCM primary / ntfy fallback — no more
-#  duplicate notifications on one phone).
+#  Deployed version below = 1.12.5 (app renamed to "My Team" + duplicate
+#  push hardening). After updating, set the app name once in Postavke →
+#  Naziv aplikacije to "My Team" — push titles then show it instead of SolRay.
 # =============================================================================
 
 name: solray
@@ -72,7 +73,7 @@ services:
       retries: 5
 
   backend:
-    image: ghcr.io/lotdog1984/solray-backend:1.12.4      # <<< bump version when updating
+    image: ghcr.io/lotdog1984/solray-backend:1.12.5      # <<< bump version when updating
     restart: unless-stopped
     environment:
       <<: *app-env
@@ -94,7 +95,7 @@ services:
         condition: service_started
 
   frontend:
-    image: ghcr.io/lotdog1984/solray-frontend:1.12.4     # <<< bump version when updating
+    image: ghcr.io/lotdog1984/solray-frontend:1.12.5     # <<< bump version when updating
     restart: unless-stopped
     ports:
       - "9996:80"          # host port for the app (preset for this server)

@@ -32,7 +32,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       final probe = Api(url);
       final settings = await probe.settings();
       if (!mounted) return;
-      final appName = (settings['app_name'] as String?) ?? 'SolRay';
+      final appName = (settings['app_name'] as String?) ?? 'My Team';
       Navigator.of(context).pushReplacement(MaterialPageRoute(
         builder: (_) => LoginScreen(baseUrl: url, appName: appName),
       ));
@@ -57,9 +57,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               const Spacer(),
               const Icon(Icons.view_kanban_outlined, color: SR.accent, size: 64),
               const SizedBox(height: 12),
-              const Text('SolRay', textAlign: TextAlign.center, style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
+              const Text('My Team', textAlign: TextAlign.center, style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
               const SizedBox(height: 8),
-              const Text('Unesite adresu vašeg SolRay poslužitelja',
+              const Text('Unesite adresu vašeg My Team poslužitelja',
                   textAlign: TextAlign.center, style: TextStyle(color: SR.muted)),
               const SizedBox(height: 28),
               TextField(
@@ -82,7 +82,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     : const Text('Poveži se'),
               ),
               const Spacer(),
-              const Text('Aplikacija radi s bilo kojom SolRay instansom — adresu unosite samo jednom.',
+              const Text('Aplikacija radi s bilo kojom My Team instancom — adresu unosite samo jednom.',
                   textAlign: TextAlign.center, style: TextStyle(color: SR.muted, fontSize: 12)),
             ],
           ),

@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- SolRay talks to the user's own instance over HTTP(S) -->
+    <!-- My Team talks to the user's own instance over HTTP(S) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- System notifications: makes the toggle in Android app settings
          active and lets us request it at runtime (Android 13+) -->
@@ -10,7 +10,7 @@
     <!-- Datoteke: take photos with the camera and upload them directly -->
     <uses-permission android:name="android.permission.CAMERA" />
     <application
-        android:label="SolRay"
+        android:label="My Team"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

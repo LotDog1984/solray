@@ -355,8 +355,40 @@ class PushTokenRemoveIn(BaseModel):
     token: str
 
 
-DEFAULT_APP_NAME = "Private Workspace"
+DEFAULT_APP_NAME = "My Team"
 APP_NAME_KEY = "app_name"
+
+# Module-level import needed by the title helper below.
+import threading
+_recent_title_lock = threading.Lock()
+_recent_title_seen: dict[tuple[int, str], datetime] = {}
+_RECENT_TITLE_TTL = timedelta(seconds=90)
+
+
+def app_title(db: Session) -> str:
+    """Display name used on pushes/notifications — the instance's configured
+    app name (admin-set in Postavke), falling back to the default."""
+    return get_setting(db, APP_NAME_KEY) or DEFAULT_APP_NAME
+
+
+def duplicate_push_recently(task_id: int, message: str) -> bool:
+    """1.12.5: collapse repeated pushes for the same task + same text within a
+    short window. Root cause of the last duplicate report: create_task fires a
+    push, and saving the same task right after (autofire/edit double-fire,
+    app retry) re-notified every tagged user with the identical text — two
+    banners for one action. Both channels (FCM and the ntfy fallback) consult
+    this guard, so the SAME event can never push twice; genuinely new events
+    (different task, changed title, different text) pass through untouched."""
+    now = datetime.now(timezone.utc)
+    key = (task_id, message)
+    with _recent_title_lock:
+        # opportunistic prune of expired entries
+        for k in [k for k, ts in _recent_title_seen.items() if now - ts > _RECENT_TITLE_TTL]:
+            del _recent_title_seen[k]
+        if now - _recent_title_seen.get(key, datetime.min.replace(tzinfo=timezone.utc)) < _RECENT_TITLE_TTL:
+            return True
+        _recent_title_seen[key] = now
+        return False
 DEFAULT_COLUMNS_KEY = "default_columns"
 DEFAULT_COLUMNS = ["Backlog", "U tijeku", "Gotovo"]
 # 1.7.0: label for the per-board supplies To-Do list and the global "Nabava" view.
@@ -496,7 +528,8 @@ def send_fcm(db: Session, user: User, message: str, board_id: int | None = None,
     access = _fcm_access_token()
     if not access:
         return False
-    data = {"title": "SolRay", "body": message}
+    title = app_title(db)
+    data = {"title": title, "body": message}
     if board_id is not None:
         data["boardId"] = str(board_id)
         data["boardName"] = board_name
@@ -508,7 +541,7 @@ def send_fcm(db: Session, user: User, message: str, board_id: int | None = None,
                 f"https://fcm.googleapis.com/v1/projects/{FCM_PROJECT_ID}/messages:send",
                 headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
                 json={"message": {"token": row.token, "data": data,
-                                  "notification": {"title": "SolRay", "body": message},
+                                  "notification": {"title": title, "body": message},
                                   "android": {"priority": "HIGH",
                                               "notification": {"channel_id": "solray", "sound": "default"}}}},
                 timeout=5,
@@ -611,11 +644,16 @@ def notify_task_users(db: Session, actor: User, task: Task) -> None:
     board = db.get(Board, column.board_id) if column else None
     board_id = board.id if board else None
     board_name = board.name if board else ""
+    title = app_title(db)
     for user_id in user_ids:
         if not user_id:
             continue
         user = db.get(User, user_id)
         message = f"{actor.display_name} vas je tagirao/la u tasku: {task.title}"
+        # 1.12.5: same task + same text within the collapse window (create
+        # followed by an immediate save, an app retry) → already pushed, skip.
+        if duplicate_push_recently(task.id, message):
+            continue
         db.add(Notification(user_id=user.id, message=message, link=f"/tasks/{task.id}"))
         # 1.12.4: exactly ONE phone channel per user — FCM (real Google push,
         # arrives even when the app is killed) when this user has a registered
@@ -948,6 +986,7 @@ def test_fcm_push(db: Db, user: CurrentUser):
     actually sends a test message so the phone either shows a banner or the
     response pinpoints the failing hop. Every failure is returned as text,
     never raised (notifications must never break the API)."""
+    title = app_title(db)
     if not _fcm_available():
         return {"ok": False,
                 "reason": "Server nema postavljen FCM (FCM_PROJECT_ID / GOOGLE_APPLICATION_CREDENTIALS) — Google push je isključen na poslužitelju.",
@@ -969,8 +1008,8 @@ def test_fcm_push(db: Db, user: CurrentUser):
             f"https://fcm.googleapis.com/v1/projects/{FCM_PROJECT_ID}/messages:send",
             headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
             json={"message": {"token": device.token,
-                              "notification": {"title": "SolRay test", "body": "Ako ovo vidite, Google push radi 🎉"},
-                              "data": {"title": "SolRay test", "body": "Ako ovo vidite, Google push radi 🎉"},
+                              "notification": {"title": f"{title} test", "body": "Ako ovo vidite, Google push radi 🎉"},
+                              "data": {"title": f"{title} test", "body": "Ako ovo vidite, Google push radi 🎉"},
                               "android": {"priority": "HIGH",
                                           "notification": {"channel_id": "solray", "sound": "default"}}}},
             timeout=8,
@@ -997,7 +1036,7 @@ def test_ntfy(db: Db, user: CurrentUser):
         return {"ok": False, "reason": "ntfy poslužitelj nije postavljen na serveru"}
     if not user.ntfy_topic:
         return {"ok": False, "reason": "Prvo spremite svoj ntfy topic"}
-    ok = send_ntfy(user, "SolRay test", "Ovo je testna obavijest iz SolRaya. Ako je vidite na telefonu, sve radi.")
+    ok = send_ntfy(user, f"{app_title(db)} test", "Ovo je testna obavijest. Ako je vidite na telefonu, sve radi.")
     if not ok:
         return {"ok": False, "reason": "ntfy poslužitelj nije odgovorio (provjerite NTFY_URL)"}
     return {"ok": True, "topic": user.ntfy_topic}

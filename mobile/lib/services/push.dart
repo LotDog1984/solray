@@ -9,7 +9,7 @@ import 'notifications.dart';
 /// killed, and the same rows/pipeline drive APNs later for iOS (the backend
 /// decides per device-platform).
 ///
-/// Architecture: the SolRay backend sends DATA-ONLY FCM messages
+/// Architecture: the My Team backend sends DATA-ONLY FCM messages
 /// (`data: {title, body, boardId?, boardName?}`); this app converts them into
 /// local system notifications via flutter_local_notifications and deep-links
 /// to the board on tap. Data-only keeps Android showing exactly one
@@ -51,7 +51,7 @@ class PushNotifications {
     return _currentToken;
   }
 
-  /// Push the FCM token to the user's own SolRay instance. 1.12.1: retries a
+  /// Push the FCM token to the user's own My Team instance. 1.12.1: retries a
   /// few times (boot races a waking phone network — the old fire-and-forget
   /// single attempt left the device unregistered for hours); re-reads the
   /// token after each wait so a rotation during retry isn't lost.
@@ -104,7 +104,7 @@ class PushNotifications {
     final boardName = data['boardName'] as String? ?? '';
     final payload = boardId != null ? '$boardId:$boardName' : null;
     await Notifications.show(
-        title: data['title'] as String? ?? 'SolRay', body: body, payload: payload);
+        title: data['title'] as String? ?? 'My Team', body: body, payload: payload);
   }
 
   /// Wire up the background handler. Must be a top-level function (isolate
@@ -117,6 +117,12 @@ class PushNotifications {
     } catch (_) {
       return; // no Firebase config — nothing to show
     }
+    // 1.12.5: messages carrying a notification block are ALREADY displayed by
+    // the OS integration in background/terminated — posting a local copy here
+    // produced the second banner on devices where this handler fires for
+    // them too. Only pure data-only messages (notification == null) need the
+    // local display fallback.
+    if (message.notification != null) return;
     await showFromData(message.data);
   }
 

@@ -58,7 +58,7 @@ class _LoginScreenState extends State<LoginScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Spacer(),
-              Text(widget.appName ?? 'SolRay',
+              Text(widget.appName ?? 'My Team',
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
               const SizedBox(height: 4),

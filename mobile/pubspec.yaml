@@ -1,7 +1,7 @@
 name: solray
-description: SolRay mobile client — connects to any SolRay instance by URL.
+description: My Team mobile client — connects to any My Team instance by URL.
 publish_to: "none"
-version: 1.12.4+17
+version: 1.12.5+18
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -30,6 +30,9 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  # Regenerates every launcher icon from assets/icon/app_icon.png
+  # (config: flutter_launcher_icons.yaml, run by CI before the APK build).
+  flutter_launcher_icons: ^0.13.1
 
 flutter:
   uses-material-design: true

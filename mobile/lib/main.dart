@@ -26,11 +26,11 @@ Future<void> main() async {
   }
   final url = await Api.storedUrl();
   final token = await Api.storedToken();
-  runApp(SolRayApp(initialUrl: url, initialToken: token, launchPayload: launchPayload));
+  runApp(MyTeamApp(initialUrl: url, initialToken: token, launchPayload: launchPayload));
 }
 
-class SolRayApp extends StatelessWidget {
-  const SolRayApp({super.key, this.initialUrl, this.initialToken, this.launchPayload});
+class MyTeamApp extends StatelessWidget {
+  const MyTeamApp({super.key, this.initialUrl, this.initialToken, this.launchPayload});
 
   final String? initialUrl;
   final String? initialToken;

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'api.dart';
 
-/// SolRay theme — same palette as the web app:
+/// My Team theme — same palette as the web app:
 /// dark-blue sidebar / light-blue content / pink-purple buttons / white text.
 class SR {
   static const bg = Color(0xFF1E293B); // content background
@@ -77,7 +77,7 @@ class Session {
   final Map<String, dynamic> me;
   final Map<String, dynamic> settings;
 
-  String get appName => (settings['app_name'] as String?) ?? 'SolRay';
+  String get appName => (settings['app_name'] as String?) ?? 'My Team';
   String get ntfyBase => (settings['ntfy_base_url'] as String?) ?? '';
   String get topic => (me['ntfy_topic'] as String?) ?? '';
 }

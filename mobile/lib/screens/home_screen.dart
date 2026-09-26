@@ -217,7 +217,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           if (d is! Map) return; // plain keepalive text
           final event = d['event'] as String?;
           if (event != null && event != 'message') return;
-          title = (d['title'] as String?) ?? 'SolRay';
+          title = (d['title'] as String?) ?? 'My Team';
           body = (d['message'] as String?) ?? '';
           if (event == null && body.isEmpty) return;
         } catch (_) {
