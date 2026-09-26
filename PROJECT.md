@@ -15,6 +15,7 @@ and the commit sha. Server stacks pin an exact version (see dockge-compose.yml).
 
 | Version | What changed |
 |---------|--------------|
+| 1.12.3 | **Zero-config FCM deployment (backend):** deploying push notifications no longer requires copying the Firebase service-account key to the server or setting any env — the official backend image now ships with the key baked in at `/secrets/fcm.json` (CI passes the repo secret `FCM_SERVICE_ACCOUNT_JSON` as a Docker build arg; building without the secret behaves exactly as before, ntfy/in-app only), and `backend/app.py` auto-detects that file and derives `FCM_PROJECT_ID` from the key's own `project_id` field. Explicit env (`FCM_PROJECT_ID` / `GOOGLE_APPLICATION_CREDENTIALS`) still wins and a compose mount over `/secrets/fcm.json` still swaps in a different Firebase project with no env changes — so `dockge-compose.yml` loses the `FCM_PROJECT_ID`/`GOOGLE_APPLICATION_CREDENTIALS` lines and the server-side key mount entirely: paste the compose, hit Deploy, push works. Setup secret to add once in GitHub: `FCM_SERVICE_ACCOUNT_JSON` (full contents of the service-account JSON — same file whose contents are already in `GOOGLE_SERVICES_JSON`'s sibling, i.e. the backend key from Firebase → Project settings → Service accounts). Verified: `py_compile`, resolver unit-checked (env override / baked key / nothing → fallback), backend image builds with and without the build arg, `docker compose config` clean. |
 | 1.12.2 | **Foreground push silence fixed + one-tap push diagnostic (mobile v1.12.2+16, backend):** after 1.12.1 the pipeline worked only when the app was killed — with the app OPEN no banner ever appeared. Root cause introduced in 1.12.1: `listenForeground` skipped displaying messages carrying a notification block ("the OS integration shows it"), but FCM **data** messages are never auto-displayed by the OS integration regardless of the notification block — foreground delivery lands in `onMessage` and only the app can show something. The foreground listener now ALWAYS posts the local notification (background/terminated display stays with the OS integration; background handler remains as fallback). New diagnostic: `POST /api/me/push/test` reports exactly where the chain stands for the calling account (FCM not configured / this phone not registered / key invalid / sent / Google's verbatim error, e.g. mismatched sender) and actually sends a test message to the registered device; Postavke → Obavijesti gains a "Testiraj Google push" button (re-registers first, then reports ✅/⚠️/❌ in Croatian). Deployment fact discovered while diagnosing: from CI logs the v1.12.1 release **was built WITH the Firebase config** (`GOOGLE_SERVICES_JSON` secret is set), so if Testiraj still reports "nije registriran" after installing 1.12.2+16 and opening the app once, the backend compose env/mount is the thing to check. Verified: `py_compile` + AST route check (`/api/me/push/test` present), `flutter analyze` clean, 17/17 tests in containerized Flutter 3.24.3. |
 | 1.12.1 | **Push notifications fixed — they never actually reached Google (backend v1.12.1 / mobile v1.12.1+15):** 1.12.0 shipped the whole FCM pipeline **except the two endpoints that feed it** — `POST /api/me/push-token` and `POST /api/me/push-token/remove` did not exist in `backend/app.py`, so every device registration silently 404'd, `push_tokens` stayed empty, and `send_fcm()` had nothing to send to (symptom: in-app Obavijesti always filled, lock-screen notifications arriving "only when something wakes the phone"). Both endpoints added (`/api/me/push-token` upserts the token — a token re-registered under another account moves to it, token echoed so the app detects rotation; `/remove` deletes the caller's own row). Second fix: `send_fcm()` sent **data-only** FCM messages, which Android queues while the app is killed and often delivers only when a later message or app start wakes the process — exactly the observed "one push, then never again / delayed by minutes"; messages now carry a **notification block** (title/body + `channel_id: solray`, HIGH priority), so Google's OS integration displays the banner immediately and wakes the process itself, data fields keep the tap deep-link, and the foreground listener skips local display when a notification block is present (no double banners while the app is open; the background handler remains as a data-only fallback). Mobile hardening: token registration now retries 3× with re-read token (boot raced the phone waking its network — one silent failure left the device unregistered until the next resume). Verified: backend `py_compile` + AST route check (55 endpoints, both push routes present, notification block in `send_fcm`), `flutter analyze` clean, 17/17 tests in containerized Flutter 3.24.3. Deploy note: the FCM fix needs BOTH sides — pull the new backend image **and** install the v1.12.1 APK, then let the app run once in the foreground so the token registers; check with `SELECT count(*) FROM push_tokens;` |
 | 1.12.0 | **Real push notifications (FCM) — mobile v1.12.0+14:** tagged users now get a **true Google push notification** on their phone even when the SolRay app is closed/killed (the old ntfy WebSocket only worked while the app was alive, which is why the ntfy app showed pushes but SolRay didn't). Backend: `push_tokens` table + `POST /api/me/push-token` / `POST /api/me/push-token/remove` (one device = one row; token re-registered by another account moves to it), `send_fcm()` pushes a **data-only** FCM HTTP v1 message (google-auth service-account OAuth, token cached + auto-refreshed; stale/unregistered tokens pruned; every failure swallowed so notifications can never break the triggering API call) fired from `notify_task_users` alongside the existing ntfy/in-app notification. Opt-in per instance: set `FCM_PROJECT_ID` + `GOOGLE_APPLICATION_CREDENTIALS` (mounted Firebase service-account JSON) — without them everything behaves exactly as before. CI release APKs include FCM when the `GOOGLE_SERVICES_JSON` GitHub secret is set (the workflow writes it to `mobile/android/app/google-services.json` before building). Mobile: firebase_core/firebase_messaging; background isolate handler converts data messages into local system notifications (same channel/payload convention `boardId:boardName` → tap opens the board); token registered at login and re-registered on every app resume (handles rotation); duplicate foreground listeners guarded; token removed on logout/change-server. Android: `com.google.gms.google-services` Gradle plugin applied **only when `google-services.json` exists** — builds without a Firebase config (CI before the secret is added, fresh clones) keep working. iOS-ready: the same token rows/pipeline drive APNs — an Apple Developer account only adds the `ios/` folder + APNs key in Firebase (no backend changes). Setup steps in PROJECT.md § Firebase Cloud Messaging setup. Verified: backend `py_compile`, `flutter analyze` clean, 17/17 tests in containerized Flutter 3.24.3. |
@@ -225,39 +226,30 @@ Decisions made with the user (do not re-litigate):
 - Suggested client: Flutter (or RN) from the same repo (`mobile/` folder), API docs
   live at `/docs` on any instance (FastAPI auto-generated).
 
-### Firebase Cloud Messaging setup (one-time, enables 1.12.0 push)
+### Firebase Cloud Messaging setup (one-time, enables push)
 
-The backend and app are ready; push activates as soon as these steps are done.
-Everything below is free and does not require an Apple account.
+Since **1.12.3 the backend needs NO setup**: the official image ships with the
+Firebase service-account key baked in (`/secrets/fcm.json`) and derives the
+project id from the key itself — deploy and push works. What follows is the
+one-time GitHub-secret setup that makes CI bake the key (already done for this
+repo) plus the reference for re-keying or local development.
 
-1. **Firebase project** — go to console.firebase.google.com → "Add project"
-   (name it e.g. `solray`; Google Analytics optional/off).
+1. **GitHub secret (done once)** — Firebase console → Project settings →
+   Service accounts → "Generate new private key" → save the JSON; add its full
+   contents as the GitHub secret **`FCM_SERVICE_ACCOUNT_JSON`**. From then on
+   every CI build bakes the key into the backend image automatically.
 2. **Android app in Firebase** — Project settings → your apps → Android icon:
-   package name **exactly** `hr.mediahost.solray` (from `mobile/android/app/build.gradle`).
-   Download `google-services.json`.
-3. **App builds** — save the file as `mobile/android/app/google-services.json`
-   (it is gitignored — never commit it). The Gradle plugin activates
-   automatically when the file exists. Locally: `flutter build apk --release`.
-   For **CI APKs**: add the file's contents as the GitHub secret
-   `GOOGLE_SERVICES_JSON` and extend `.github/workflows/mobile-apk.yml` to write
-   it to `mobile/android/app/google-services.json` before building.
-4. **Service account for the backend** — Firebase console → Project settings →
-   Service accounts → "Generate new private key" → save as
-   `fcm-service-account.json`.
-5. **Backend env** (local: `.env` / server: the `x-app-env` block in Dockge or
-   `.env` for docker-compose):
-   ```
-   FCM_PROJECT_ID=<the firebase project id, shown in Project settings>
-   GOOGLE_APPLICATION_CREDENTIALS=/secrets/fcm.json
-   ```
-   and mount the JSON (uncomment the prepared volume lines in
-   `docker-compose.yml` / `dockge-compose.yml`). Then recreate the backend.
-6. **Verify** — log into the app on a phone (accept the notification
-   permission), tag a user in a task → the tagged phone gets a system
-   notification even with the app closed; tapping it opens the board.
-   If nothing arrives: check backend logs for FCM errors, confirm the token
-   reached the server (`SELECT count(*) FROM push_tokens;`), and that Firebase
-   shows the Android app with the exact package name.
+   package name **exactly** `hr.mediahost.solray`; download `google-services.json`
+   and add its contents as the GitHub secret **`GOOGLE_SERVICES_JSON`** (the
+   APK workflow writes it to `mobile/android/app/google-services.json` before
+   building). Locally: save it as `mobile/android/app/google-services.json`
+   (gitignored) — the Gradle plugin activates when the file exists.
+3. **Deploy** — `dockge-compose.yml` has no FCM lines and no key mount: paste,
+   Deploy, done. Verify with the app's "Testiraj Google push" button.
+4. **Custom key / local dev** — mount a key over `/secrets/fcm.json`
+   (docker-compose.yml: `./firebase-service-account.json:/secrets/fcm.json:ro`,
+   gitignored) or set `FCM_PROJECT_ID` + `GOOGLE_APPLICATION_CREDENTIALS`
+   explicitly — both override the baked-in default.
 
 **iOS later:** buy the Apple Developer account, add an iOS app in Firebase
 (bundle id from the future `ios/` folder), upload the APNs key in Firebase

@@ -27,21 +27,15 @@ services:
       NTFY_URL: http://ntfy:80
       # Public ntfy address for mobile clients (set when exposed via a domain)
       NTFY_PUBLIC_URL: ${NTFY_PUBLIC_URL:-}
-      # 1.12.0: FCM push (optional) — set FCM_PROJECT_ID and mount a Firebase
-      # service-account JSON, then point GOOGLE_APPLICATION_CREDENTIALS at it:
+      # 1.12.3: FCM push needs no env and no key file — official images ship
+      # with the Firebase key baked in (/secrets/fcm.json) and derive the
+      # project id from it. To use a DIFFERENT Firebase project, mount your
+      # key over /secrets/fcm.json under volumes below, or set explicitly:
       #   FCM_PROJECT_ID: your-firebase-project-id
       #   GOOGLE_APPLICATION_CREDENTIALS: /secrets/fcm.json
-      # and add under volumes below:
-      #   - ./firebase-service-account.json:/secrets/fcm.json:ro
-      # Without these the backend simply skips FCM (ntfy still works).
-      FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
-      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:9999}
     volumes:
       - uploads:/data/uploads
-      # 1.12.0 FCM push — the key file is gitignored; without it, remove this
-      # line and the two FCM_* vars above (push falls back to ntfy only).
-      - ./firebase-service-account.json:/secrets/fcm.json:ro
     depends_on:
       db:
         condition: service_healthy

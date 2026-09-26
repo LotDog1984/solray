@@ -37,6 +37,33 @@ jobs:
       - name: Sync version into frontend build context
         run: cp VERSION frontend/VERSION
 
+      # 1.12.3: zero-config FCM push — bake the Firebase service-account key
+      # into the backend image so a deployed stack needs NO key file on the
+      # server and NO FCM env vars. The backend auto-detects /secrets/fcm.json
+      # and derives FCM_PROJECT_ID from the key itself. Without the secret
+      # (forks, local builds) the image builds fine and push falls back to
+      # ntfy/in-app — same behavior as before 1.12.0.
+      - name: Read Firebase service-account key (build arg)
+        env:
+          FCM_SERVICE_ACCOUNT_JSON: ${{ secrets.FCM_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$FCM_SERVICE_ACCOUNT_JSON" ]; then
+            echo "FCM_SERVICE_ACCOUNT_JSON is set — backend image will include the FCM key"
+            # Fail loudly if the secret holds the WRONG Firebase file: the
+            # Android app's google-services.json (project_info/client sections)
+            # is NOT a service-account key and can never sign FCM OAuth tokens.
+            # The real key (Project settings → Service accounts → Generate new
+            # private key) always has client_email + private_key at top level.
+            if ! printf '%s' "$FCM_SERVICE_ACCOUNT_JSON" | jq -e '.client_email | type == "string" and length > 0' >/dev/null 2>&1 \
+               || ! printf '%s' "$FCM_SERVICE_ACCOUNT_JSON" | jq -e '.private_key | type == "string" and length > 100' >/dev/null 2>&1; then
+              echo "::error::FCM_SERVICE_ACCOUNT_JSON is NOT a service-account key (no client_email/private_key) — paste the JSON from Firebase Project settings → Service accounts → 'Generate new private key', NOT the Android app's google-services.json"
+              exit 1
+            fi
+            printf '%s' "$FCM_SERVICE_ACCOUNT_JSON" | jq -r '"key: valid service-account JSON for project " + (.project_id // "?")'
+          else
+            echo "::notice::FCM_SERVICE_ACCOUNT_JSON secret not set — backend image ships WITHOUT the FCM key (ntfy only)"
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -52,6 +79,8 @@ jobs:
         with:
           context: ./backend
           push: true
+          build-args: |
+            FCM_SERVICE_ACCOUNT_JSON=${{ secrets.FCM_SERVICE_ACCOUNT_JSON }}
           tags: |
             ${{ env.BACKEND_IMAGE }}:${{ steps.ver.outputs.version }}
             ${{ env.BACKEND_IMAGE }}:latest

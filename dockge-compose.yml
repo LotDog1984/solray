@@ -12,7 +12,7 @@
 #
 #  Server-specific values already baked in below (do not change these unless
 #  the server setup changes):
-#    - app data (db, ntfy cache, FCM key):  /mnt/docker/apps/solray/data/…
+#    - app data (db, ntfy cache):            /mnt/docker/apps/solray/data/…
 #    - uploaded files (fast SSD app dir → NAS storage): /mnt/nas/solray
 #    - frontend port:  9996   (open http://<server-ip>:9996)
 #    - ntfy port:      8084   (phone notifications)
@@ -33,7 +33,7 @@
 #  the admin and registration closes automatically afterwards.
 #
 #  VERSION HISTORY: see PROJECT.md in the repo (version log section).
-#  Deployed version below = 1.12.2 (FCM push + push diagnostic).
+#  Deployed version below = 1.12.3 (zero-config FCM — key inside the image).
 # =============================================================================
 
 name: solray
@@ -45,9 +45,12 @@ x-app-env: &app-env
   CORS_ORIGINS: http://192.168.1.50:9996                    # <<< EDIT (3) the EXACT URL you open the app in the browser — preset to server IP 192.168.1.50 + port 9996; change ONLY if the server IP is different
   NTFY_BASE_URL: http://192.168.1.50:8084                   # <<< EDIT (4) same host as (3), port 8084 (phone notifications) — same "only if IP differs" rule
   NTFY_PUBLIC_URL: https://ntfy.example.com                 # <<< EDIT (5) public https ntfy address for the MOBILE APP (your nginx domain); only matters if the phone should push via ntfy instead of FCM
-  # 1.12.0 FCM push (real Google push for the mobile app):
-  FCM_PROJECT_ID: studio-1075888381-e31b1                   # Firebase project ID (preset)
-  GOOGLE_APPLICATION_CREDENTIALS: /secrets/fcm.json
+  # 1.12.3 FCM push (real Google push for the mobile app): ZERO-CONFIG — the
+  # Firebase key ships INSIDE the backend image (/secrets/fcm.json) and the
+  # project id is derived from the key itself. Nothing to set, copy or mount.
+  # To use a DIFFERENT Firebase project: mount another key over
+  # /secrets/fcm.json (see backend volumes below) or set FCM_PROJECT_ID and
+  # GOOGLE_APPLICATION_CREDENTIALS here explicitly.
 # ------------------------------------------------------------------------------
 
 services:
@@ -68,7 +71,7 @@ services:
       retries: 5
 
   backend:
-    image: ghcr.io/lotdog1984/solray-backend:1.12.2      # <<< bump version when updating
+    image: ghcr.io/lotdog1984/solray-backend:1.12.3      # <<< bump version when updating
     restart: unless-stopped
     environment:
       <<: *app-env
@@ -79,9 +82,10 @@ services:
     volumes:
       # uploaded files live on the NAS:
       - /mnt/nas/solray:/data/uploads
-      # FCM push (1.12.0) — the service-account JSON must exist at this
-      # server path (copied already); pairs with FCM_PROJECT_ID above:
-      - /mnt/docker/apps/solray/data/fcm-service-account.json:/secrets/fcm.json:ro
+      # FCM push (1.12.3): no key mount needed — the key ships inside the
+      # image. Only for a DIFFERENT Firebase project, mount that key over
+      # /secrets/fcm.json, e.g.:
+      # - /mnt/docker/apps/solray/data/fcm-service-account.json:/secrets/fcm.json:ro
     depends_on:
       db:
         condition: service_healthy
@@ -89,7 +93,7 @@ services:
         condition: service_started
 
   frontend:
-    image: ghcr.io/lotdog1984/solray-frontend:1.12.2     # <<< bump version when updating
+    image: ghcr.io/lotdog1984/solray-frontend:1.12.3     # <<< bump version when updating
     restart: unless-stopped
     ports:
       - "9996:80"          # host port for the app (preset for this server)

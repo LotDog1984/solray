@@ -60,8 +60,31 @@ NTFY_PUBLIC_URL = (os.getenv("NTFY_PUBLIC_URL") or os.getenv("NTFY_BASE_URL") or
 # 1.12.0: FCM push (HTTP v1 API). Set FCM_PROJECT_ID and point
 # GOOGLE_APPLICATION_CREDENTIALS at a Firebase service-account JSON — without
 # them the API is unchanged and phones fall back to ntfy/in-app notifications.
-FCM_PROJECT_ID = os.getenv("FCM_PROJECT_ID", "")
-GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+# 1.12.3: zero-config default — official images ship with the key baked in at
+# /secrets/fcm.json, and both values are derived from the key file itself
+# (project_id field). Explicit env still wins, and a compose mount over
+# /secrets/fcm.json replaces the baked-in key without any env changes.
+def _resolve_fcm_config() -> tuple[str, str]:
+    import json as _json
+
+    explicit_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    explicit_project = os.getenv("FCM_PROJECT_ID", "")
+    if explicit_path:
+        return explicit_project, explicit_path
+    for candidate in ("/secrets/fcm.json", "/app/fcm.json"):
+        try:
+            if not os.path.isfile(candidate):
+                continue
+            with open(candidate, encoding="utf-8") as fh:
+                project_id = str(_json.load(fh).get("project_id") or "")
+            if project_id:
+                return project_id, candidate
+        except Exception:
+            continue  # unreadable/corrupt key — behave as if it is not there
+    return "", ""
+
+
+FCM_PROJECT_ID, GOOGLE_APPLICATION_CREDENTIALS = _resolve_fcm_config()
 CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:8080").split(",")]
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
