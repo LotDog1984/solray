@@ -45,6 +45,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   int _tab = 0; // 0 Projekti, 1 Pretraga, 2 Datoteke, 3 Obavijesti, 4 Nabava
   Timer? _unreadPoll;
   int _projectsTick = 0; // bumps when sync says projects changed
+  // 1.12.4: dedupe guard for back-to-back identical ntfy deliveries
+  // (ntfy can redeliver a message right after a socket reconnect).
+  String _lastNtfyKey = '';
+  DateTime _lastNtfyAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
   void initState() {
@@ -220,6 +224,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           return; // keepalives etc.
         }
         _socketRetry = 0; // healthy again
+        // 1.12.4: ntfy is now only the fallback channel (FCM users get no
+        // ntfy pushes at all), but ntfy itself can redeliver a message right
+        // after a reconnect — drop an identical burst arriving back-to-back.
+        final key = '$title\u0000$body';
+        final now = DateTime.now();
+        if (key == _lastNtfyKey &&
+            now.difference(_lastNtfyAt) < const Duration(seconds: 3)) {
+          return;
+        }
+        _lastNtfyKey = key;
+        _lastNtfyAt = now;
         _refreshUnread();
         Notifications.show(title: title, body: body);
       },
@@ -251,6 +266,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     bus.listen('nabava', (_) {
       if (!mounted || _tab != 4) return;
       setState(() => _projectsTick++); // rebuild → NabavaTab refetches in didUpdateWidget
+    });
+    // 1.12.4: tag pushes no longer travel over ntfy for FCM-registered
+    // devices (exactly one channel per user), so the Obavijesti badge can no
+    // longer rely on the ntfy WebSocket arriving first — refresh it whenever
+    // the sync bus reports a board change (a new mention changes the count).
+    bus.listen('board', (_) {
+      if (!mounted) return;
+      _refreshUnread();
     });
     // 1.10.2: listen to the 20 s fallback tick (fires while the sync socket
     // is down) — this is what was missing: with the socket asleep the

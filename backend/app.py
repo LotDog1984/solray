@@ -482,23 +482,26 @@ def _fcm_access_token() -> str | None:
 
 
 def send_fcm(db: Session, user: User, message: str, board_id: int | None = None,
-             board_name: str = "") -> None:
-    """Push to every FCM device registered for the user. Never raises:
+             board_name: str = "") -> bool:
+    """Push to every FCM device registered for the user. Returns True when at
+    least one message was accepted by Google (used by notify_task_users to
+    decide whether the ntfy fallback should stay silent). Never raises:
     notification failures must never break the API call that triggered them.
     Unregistered/expired tokens are pruned so the list stays clean."""
     if not _fcm_available():
-        return
+        return False
     rows = db.scalars(select(PushToken).where(PushToken.user_id == user.id)).all()
     if not rows:
-        return
+        return False
     access = _fcm_access_token()
     if not access:
-        return
+        return False
     data = {"title": "SolRay", "body": message}
     if board_id is not None:
         data["boardId"] = str(board_id)
         data["boardName"] = board_name
     stale = []
+    delivered = False
     for row in rows:
         try:
             resp = requests.post(
@@ -510,8 +513,10 @@ def send_fcm(db: Session, user: User, message: str, board_id: int | None = None,
                                               "notification": {"channel_id": "solray", "sound": "default"}}}},
                 timeout=5,
             )
+            if resp.status_code == 200:
+                delivered = True
             # 404 / UNREGISTERED = the app was uninstalled or the token expired
-            if resp.status_code == 404 or (resp.status_code == 400 and "UNREGISTERED" in resp.text):
+            elif resp.status_code == 404 or (resp.status_code == 400 and "UNREGISTERED" in resp.text):
                 stale.append(row)
         except requests.RequestException:
             pass  # network hiccup — keep the token, next notification retries
@@ -519,6 +524,7 @@ def send_fcm(db: Session, user: User, message: str, board_id: int | None = None,
         db.delete(row)
     if stale:
         db.commit()
+    return delivered
 
 
 def send_ntfy(user: User, title: str, message: str) -> bool:
@@ -611,9 +617,12 @@ def notify_task_users(db: Session, actor: User, task: Task) -> None:
         user = db.get(User, user_id)
         message = f"{actor.display_name} vas je tagirao/la u tasku: {task.title}"
         db.add(Notification(user_id=user.id, message=message, link=f"/tasks/{task.id}"))
-        send_ntfy(user, "Novi tag", message)
-        # 1.12.0: real device push (FCM) — arrives even when the app is killed
-        send_fcm(db, user, message, board_id=board_id, board_name=board_name)
+        # 1.12.4: exactly ONE phone channel per user — FCM (real Google push,
+        # arrives even when the app is killed) when this user has a registered
+        # device; ntfy only as fallback for accounts without a device token
+        # (otherwise the same tag arrived twice: once via FCM, once via ntfy).
+        if not send_fcm(db, user, message, board_id=board_id, board_name=board_name):
+            send_ntfy(user, "Novi tag", message)
 
 
 THUMB_SIZE = (420, 420)  # max thumbnail dimensions (JPEG, quality 80)
