@@ -60,6 +60,15 @@ jobs:
               exit 1
             fi
             printf '%s' "$FCM_SERVICE_ACCOUNT_JSON" | jq -r '"key: valid service-account JSON for project " + (.project_id // "?")'
+            # The key JSON is pretty-printed (multi-line); build args would
+            # line-split it (1.12.3's first CI run died exactly that way —
+            # the Dockerfile received only the opening "{"). Ship it as a
+            # single-line base64 blob and decode in the Dockerfile instead.
+            {
+              printf 'FCM_KEY_B64='
+              printf '%s' "$FCM_SERVICE_ACCOUNT_JSON" | base64 -w0 | tr -d '\n'
+              echo
+            } >> "$GITHUB_ENV"
           else
             echo "::notice::FCM_SERVICE_ACCOUNT_JSON secret not set — backend image ships WITHOUT the FCM key (ntfy only)"
           fi
@@ -80,7 +89,7 @@ jobs:
           context: ./backend
           push: true
           build-args: |
-            FCM_SERVICE_ACCOUNT_JSON=${{ secrets.FCM_SERVICE_ACCOUNT_JSON }}
+            FCM_SERVICE_ACCOUNT_JSON_B64=${{ env.FCM_KEY_B64 }}
           tags: |
             ${{ env.BACKEND_IMAGE }}:${{ steps.ver.outputs.version }}
             ${{ env.BACKEND_IMAGE }}:latest
