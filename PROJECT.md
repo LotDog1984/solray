@@ -15,6 +15,8 @@ and the commit sha. Server stacks pin an exact version (see dockge-compose.yml).
 
 | Version | What changed |
 |---------|--------------|
+| 1.12.0 | **Real push notifications (FCM) — mobile v1.12.0+14:** tagged users now get a **true Google push notification** on their phone even when the SolRay app is closed/killed (the old ntfy WebSocket only worked while the app was alive, which is why the ntfy app showed pushes but SolRay didn't). Backend: `push_tokens` table + `POST /api/me/push-token` / `POST /api/me/push-token/remove` (one device = one row; token re-registered by another account moves to it), `send_fcm()` pushes a **data-only** FCM HTTP v1 message (google-auth service-account OAuth, token cached + auto-refreshed; stale/unregistered tokens pruned; every failure swallowed so notifications can never break the triggering API call) fired from `notify_task_users` alongside the existing ntfy/in-app notification. Opt-in per instance: set `FCM_PROJECT_ID` + `GOOGLE_APPLICATION_CREDENTIALS` (mounted Firebase service-account JSON) — without them everything behaves exactly as before. CI release APKs include FCM when the `GOOGLE_SERVICES_JSON` GitHub secret is set (the workflow writes it to `mobile/android/app/google-services.json` before building). Mobile: firebase_core/firebase_messaging; background isolate handler converts data messages into local system notifications (same channel/payload convention `boardId:boardName` → tap opens the board); token registered at login and re-registered on every app resume (handles rotation); duplicate foreground listeners guarded; token removed on logout/change-server. Android: `com.google.gms.google-services` Gradle plugin applied **only when `google-services.json` exists** — builds without a Firebase config (CI before the secret is added, fresh clones) keep working. iOS-ready: the same token rows/pipeline drive APNs — an Apple Developer account only adds the `ios/` folder + APNs key in Firebase (no backend changes). Setup steps in PROJECT.md § Firebase Cloud Messaging setup. Verified: backend `py_compile`, `flutter analyze` clean, 17/17 tests in containerized Flutter 3.24.3. |
+| 1.11.0 | **Camera photos + working thumbnails (mobile v1.11.0+13):** the Datoteke tab gains a **Slikaj** button next to Datoteka — take a photo with the camera, get a naming dialog pre-filled with today's date ("Slika 25.9.2026"), edit or keep it, photo uploads as JPEG (auto-downscaled to max 1600px, best-effort) with proper `image/jpeg` content type, and cancel anywhere throws the shot away. The name makes photos findable in the list instead of opening pictures one by one. **Thumbnails now actually work:** two real bugs fixed — (1) backend gated thumbnail generation on the browser-supplied Content-Type header, so any upload sent as `application/octet-stream` (everything from mobile) silently got NO thumbnail: the stored bytes are now sniffed for JPEG/PNG/GIF/BMP magic and mislabeled camera JPEGs are stored as `image/jpeg` so they render as pictures; duplicate `is_image` definition removed. (2) the mobile app rendered **full-size originals** in list/grid rows (huge downloads on cellular); it now decodes the server's 420px thumbnails (`cacheWidth` for list rows, placeholder background while loading in grid). New deps: image_picker, flutter_image_compress, image, http_parser. Verified in containerized Flutter 3.24.3: analyze clean, 17/17 tests (new files_screen_test.dart exercises the real camera flow via an injected picker — naming dialog, filename, content-type, cancel paths — and asserts thumbnails point at the token-authenticated `/api/files/{id}/thumb` endpoint). |
 | 1.10.2 | **Mobile Projects tab never goes stale (v1.10.2+12):** fixed "empty on cold start / stale after a while — must pull to refresh" on the Projekti tab. Four root causes, all fixed: (1) nothing subscribed to the SyncBus's 20 s fallback tick — it fires only to `'tick'` listeners, so with the sync socket asleep (phone sleep, network switch) nothing reloaded; the tick now refreshes the active Projects/Nabava tab. (2) `SyncBus.poke()` (force immediate reconnect, "e.g. app resumed") was never called — the app now pokes the bus on every resume, skipping the up-to-5-min reconnect backoff after phone sleep. (3) The first projects fetch raced the phone waking its network and failed silently, leaving an empty list until a manual pull — boot now retries (up to 3 attempts with short backoff) and every automatic refresh is silent (no error snackbars from background refreshes). (4) Opening the Projects tab never reloaded — the tab now fetches fresh data on every switch, and the app refreshes on `AppLifecycleState.resumed` via `WidgetsBindingObserver`. Live WebSocket sync (1.8.0) still handles instant updates while the socket is healthy; these fixes cover every path it misses. Verified in containerized Flutter 3.24.3: analyze clean, 9/9 tests. |
 | 1.10.1 | **Cleaner supplier export (web + mobile v1.10.1+11):** the ✉️ "Pošalji e-mailom" / share export now contains only the item text the user typed — one line per Stavka (`- lada 400x150 bijela`), with the `(Projekt — Ploča)` origin suffix removed from the order text (origin stays visible in the list UI, just not in the e-mail). Same open-only rule as 1.10.0. Verified in the browser (mailto body + clipboard captured) and in containerized Flutter 3.24.3 (analyze clean, 9/9 tests). |
 | 1.10.0 | **Supplier order export + Nabava housekeeping (web + mobile v1.10.0+10):** ✉️ "Pošalji e-mailom" builds a plain-text order from the OPEN (unchecked) Stavke only — so re-sending an order never repeats bought items — and opens the user's own mail app via `mailto:` with the list prefilled in the body (subject "Nabava — dd.mm.yyyy."); the same text is copied to the clipboard as a fallback ("✓ Kopirano — otvaram poštu…" on the button, paste-prompt if clipboard is blocked). Mobile uses the native share sheet (pick Gmail/Outlook, body prefilled). "Izbriši Preuzete Stvari" (bottom of the list, both UIs, disabled when nothing is checked, confirm dialog) deletes every checked Stavka across ALL lists — new `DELETE /api/nabava/checked` — and fires board + nabava sync events so open boards refresh. Checked items now sit right below the unchecked ones with the most recently checked first (new `todo_entries.checked_at` stamp + idempotent migration; ordering `is_done, checked_at DESC NULLS FIRST, created_at`). Bug fixed en route: renaming a done Stavka silently unticked it (PATCH reset `is_done`) — title and is_done are now independently optional on both PATCH routes, so tick-only and rename-only requests both work. Verified via API + browser (mailto body and clipboard captured, ordering after ticks, rename-preserves-done on both routes, clear deleted exactly the done ones) and in containerized Flutter 3.24.3 (analyze clean, 9/9 tests incl. export-format tests). APK via CI on the v1.10.0 tag. |
@@ -202,11 +204,12 @@ Decisions made with the user (do not re-litigate):
   that on every `v*` tag builds a signed APK and attaches it to the GitHub Release
   (same tag → Docker images on GHCR + `solray-x.y.z.apk` on the Releases page).
   User never builds locally. Simple generated signing key stored as a GitHub secret.
-- **Notifications: level 2.** The app itself subscribes to the user's ntfy topic via
-  **WebSocket** (`wss://<instance-ntfy>/topic/ws`) — pushes appear inside the app while
-  it's open, with live board refresh when a `task_changed` event arrives. Team is all
-  Android except ONE iPhone → that device keeps the ntfy app as fallback (iOS forbids
-  persistent background sockets); UnifiedPush/APNs only if ever needed later.
+- **Notifications: level 4 (1.12.0) — FCM push.** Real Google push that arrives even
+  when the app is killed: the backend sends data-only FCM messages to registered
+  device tokens (`push_tokens` table), the app turns them into system notifications
+  and deep-links to the board on tap. The older ntfy WebSocket layer (in-app while
+  open + slow-poll) remains as automatic fallback and still drives live board
+  refresh. iOS rides the same pipeline later via APNs (see the setup section).
 - **Server-address onboarding (no baked domains).** First run: single input for the
   team's URL (e.g. `https://tim-a.mediahost.stream`) → validate via public
   `GET /api/settings` (shows the instance's app_name as confirmation) → login → store
@@ -219,6 +222,45 @@ Decisions made with the user (do not re-litigate):
   new fields must be optional.** 401 → re-login screen; tolerate unknown JSON fields.
 - Suggested client: Flutter (or RN) from the same repo (`mobile/` folder), API docs
   live at `/docs` on any instance (FastAPI auto-generated).
+
+### Firebase Cloud Messaging setup (one-time, enables 1.12.0 push)
+
+The backend and app are ready; push activates as soon as these steps are done.
+Everything below is free and does not require an Apple account.
+
+1. **Firebase project** — go to console.firebase.google.com → "Add project"
+   (name it e.g. `solray`; Google Analytics optional/off).
+2. **Android app in Firebase** — Project settings → your apps → Android icon:
+   package name **exactly** `hr.mediahost.solray` (from `mobile/android/app/build.gradle`).
+   Download `google-services.json`.
+3. **App builds** — save the file as `mobile/android/app/google-services.json`
+   (it is gitignored — never commit it). The Gradle plugin activates
+   automatically when the file exists. Locally: `flutter build apk --release`.
+   For **CI APKs**: add the file's contents as the GitHub secret
+   `GOOGLE_SERVICES_JSON` and extend `.github/workflows/mobile-apk.yml` to write
+   it to `mobile/android/app/google-services.json` before building.
+4. **Service account for the backend** — Firebase console → Project settings →
+   Service accounts → "Generate new private key" → save as
+   `fcm-service-account.json`.
+5. **Backend env** (local: `.env` / server: the `x-app-env` block in Dockge or
+   `.env` for docker-compose):
+   ```
+   FCM_PROJECT_ID=<the firebase project id, shown in Project settings>
+   GOOGLE_APPLICATION_CREDENTIALS=/secrets/fcm.json
+   ```
+   and mount the JSON (uncomment the prepared volume lines in
+   `docker-compose.yml` / `dockge-compose.yml`). Then recreate the backend.
+6. **Verify** — log into the app on a phone (accept the notification
+   permission), tag a user in a task → the tagged phone gets a system
+   notification even with the app closed; tapping it opens the board.
+   If nothing arrives: check backend logs for FCM errors, confirm the token
+   reached the server (`SELECT count(*) FROM push_tokens;`), and that Firebase
+   shows the Android app with the exact package name.
+
+**iOS later:** buy the Apple Developer account, add an iOS app in Firebase
+(bundle id from the future `ios/` folder), upload the APNs key in Firebase
+console, register the token with `platform: 'ios'` — the backend `push_tokens`
+rows and `send_fcm` pipeline already support it; no backend changes needed.
 
 ### Smaller ideas
 

@@ -1,3 +1,4 @@
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 
 import 'api.dart';
@@ -5,11 +6,21 @@ import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'services/notifications.dart';
+import 'services/push.dart';
 import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final launchPayload = await Notifications.init();
+  // 1.12.0: FCM background handler — notifications arriving while the app is
+  // killed/backgrounded are turned into system notifications in a separate
+  // isolate. Registered before runApp, as Firebase requires. No-op (caught)
+  // when the Firebase config (google-services.json) is absent.
+  try {
+    FirebaseMessaging.onBackgroundMessage(PushNotifications.firebaseMessagingBackgroundHandler);
+  } catch (_) {
+    // no Firebase config — the app stays on the ntfy/in-app flow
+  }
   final url = await Api.storedUrl();
   final token = await Api.storedToken();
   runApp(SolRayApp(initialUrl: url, initialToken: token, launchPayload: launchPayload));

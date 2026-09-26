@@ -6,6 +6,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../api.dart';
 import '../services/notifications.dart';
+import '../services/push.dart';
 import '../services/sync.dart';
 import '../theme.dart';
 import 'board_screen.dart';
@@ -51,10 +52,34 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this); // 1.10.2: refresh on app resume
     _boot();
     Notifications.setTapHandler(_onNotificationTap);
+    // 1.12.0: FCM tap handling — notification tapped while app was in
+    // background (the cold-start path arrives via launchPayload, since the
+    // background isolate posts through the same local-notification pipeline).
+    PushNotifications.listenTaps((message) {
+      final data = message.data;
+      final boardId = int.tryParse(data['boardId'] ?? '');
+      if (boardId != null) {
+        _onNotificationTap('${data['boardId']}:${data['boardName'] ?? 'Ploča'}');
+      } else {
+        _onNotificationTap(null);
+      }
+    });
     if (widget.launchPayload != null) {
       // Cold start from a notification tap — open after boot.
       final payload = widget.launchPayload!;
       Future<void>.delayed(const Duration(milliseconds: 600), () => _onNotificationTap(payload));
+    }
+  }
+
+  /// 1.12.0: initialize FCM (asks the Android 13+ permission once) and push
+  /// the device token to the user's instance. Safe to call repeatedly.
+  Future<void> _registerPush() async {
+    try {
+      await PushNotifications.init();
+      await PushNotifications.registerWithBackend(widget.api);
+      PushNotifications.listenForeground(widget.api);
+    } catch (_) {
+      // push is best-effort — ntfy/in-app notifications keep working
     }
   }
 
@@ -98,6 +123,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       SyncBus.forApi(widget.api).poke();
       _refresh(silent: true);
       _refreshUnread();
+      _registerPush(); // 1.12.0: re-register in case the FCM token rotated
     }
   }
 
@@ -130,6 +156,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       _connectNotifications();
       _connectSync();
       await _maybeAskPermission();
+      // 1.12.0: real device push (FCM). Best-effort — without a Firebase
+      // config the app keeps the ntfy/in-app flow; with one, the token is
+      // registered so the server can wake the phone even when the app is
+      // killed. Re-registered on every resume in case it rotated while away.
+      _registerPush();
       _unreadPoll = Timer.periodic(const Duration(seconds: 30), (_) => _refreshUnread());
     } catch (e) {
       setState(() {
@@ -233,6 +264,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   void _forceLogin() {
+    PushNotifications.unregister(widget.api); // 1.12.0: remove push token
     Api.clearSession();
     if (!mounted) return;
     Navigator.of(context).pushReplacement(MaterialPageRoute(

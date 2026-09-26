@@ -7,6 +7,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../api.dart';
 import '../services/notifications.dart';
+import '../services/push.dart';
 import '../services/updater.dart';
 import '../theme.dart';
 import 'login_screen.dart';
@@ -359,6 +360,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: OutlinedButton.icon(
                 onPressed: () async {
                   final navigator = Navigator.of(context);
+                  await PushNotifications.unregister(api); // 1.12.0
                   await Api.clearSession();
                   navigator.pushReplacement(MaterialPageRoute(
                       builder: (_) => LoginScreen(baseUrl: api.baseUrl)));

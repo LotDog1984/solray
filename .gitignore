@@ -15,6 +15,11 @@ solray-deploy-key
 solray-deploy-key.pub
 *.pem
 
+# Firebase service-account key (1.12.0 FCM push) — master key to the Firebase
+# project, never commit. google-services.json is ignored separately in mobile/.
+firebase-service-account.json
+*firebase-adminsdk*.json
+
 # IDE
 .vscode/
 .idea/

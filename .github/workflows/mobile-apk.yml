@@ -19,6 +19,21 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
+      # 1.12.0: FCM push — write the Firebase Android config from the repo
+      # secret when present. Without the secret the APK still builds (the
+      # Gradle plugin stays off and the app falls back to ntfy notifications).
+      - name: Write Firebase config (google-services.json)
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            mkdir -p mobile/android/app
+            printf '%s' "$GOOGLE_SERVICES_JSON" > mobile/android/app/google-services.json
+            python3 -c "import json; json.load(open('mobile/android/app/google-services.json')); print('google-services.json: valid JSON')"
+          else
+            echo "::notice::GOOGLE_SERVICES_JSON secret not set — building APK without FCM push (ntfy only)"
+          fi
+
       - name: Read version
         id: ver
         run: echo "version=$(head -1 VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"

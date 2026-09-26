@@ -39,6 +39,11 @@ x-app-env: &app-env
   CORS_ORIGINS: http://192.168.1.50:9998                    # <<< EDIT (3) the EXACT URL you open the app in the browser (http://IP-or-domain:PORT)
   NTFY_BASE_URL: http://192.168.1.50:8082                   # <<< EDIT (4) same host as (3), port 8082 (phone notifications)
   NTFY_PUBLIC_URL: https://ntfy.example.com                 # <<< EDIT (5) public https ntfy address for the MOBILE APP (your nginx domain)
+  # 1.12.0 FCM push (optional, real Google push for the mobile app):
+  # after setting up a Firebase project (see PROJECT.md) uncomment the next
+  # two lines and the volume line in the backend service below.
+  # FCM_PROJECT_ID: your-firebase-project-id
+  # GOOGLE_APPLICATION_CREDENTIALS: /secrets/fcm.json
 # ------------------------------------------------------------------------------
 
 services:
@@ -69,6 +74,9 @@ services:
       NTFY_URL: http://ntfy:80
     volumes:
       - /mnt/docker/apps/solray/data/uploads:/data/uploads
+      # FCM push (1.12.0): drop the service-account JSON on the server and
+      # uncomment, together with the two env lines in the block above:
+      # - /mnt/docker/apps/solray/data/fcm-service-account.json:/secrets/fcm.json:ro
     depends_on:
       db:
         condition: service_healthy

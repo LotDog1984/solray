@@ -1,8 +1,13 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:image/image.dart' as img;
+import 'package:image_picker/image_picker.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -14,11 +19,24 @@ import '../theme.dart';
 /// Datoteke for one project (web parity): upload, thumbnails, list/grid,
 /// open & share. Auth token is embedded in thumb URLs like the web app.
 class FilesScreen extends StatefulWidget {
-  const FilesScreen({super.key, required this.api, required this.projectId, required this.projectName});
+  const FilesScreen({
+    super.key,
+    required this.api,
+    required this.projectId,
+    required this.projectName,
+    this.syncListener,
+    this.cameraPicker,
+  });
 
   final Api api;
   final int projectId;
   final String projectName;
+
+  /// Test hooks — null = production behavior (real SyncBus / ImagePicker).
+  @visibleForTesting
+  final void Function(String scope, void Function() onEvent)? syncListener;
+  @visibleForTesting
+  final Future<XFile?> Function()? cameraPicker;
 
   @override
   State<FilesScreen> createState() => _FilesScreenState();
@@ -38,9 +56,23 @@ class _FilesScreenState extends State<FilesScreen> {
     _load();
     // Real-time sync: someone uploaded from web/another device — reload
     // silently; slow-poll tick keeps the list fresh if the socket is down.
-    _syncCancel = SyncBus.forApi(widget.api).listen('files:${widget.projectId}', (_) {
-      if (mounted) _load();
-    });
+    // (Under `flutter test` the default is a no-op — no sockets/timers there;
+    // pass syncListener explicitly to exercise sync-driven reloads.)
+    final scope = 'files:${widget.projectId}';
+    final custom = widget.syncListener ??
+        (Platform.environment.containsKey('FLUTTER_TEST')
+            ? (String _, void Function() __) {}
+            : null);
+    if (custom != null) {
+      custom(scope, () {
+        if (mounted) _load();
+      });
+      _syncCancel = () {}; // tests own the subscription lifecycle
+    } else {
+      _syncCancel = SyncBus.forApi(widget.api).listen(scope, (_) {
+        if (mounted) _load();
+      });
+    }
   }
 
   @override
@@ -75,9 +107,100 @@ class _FilesScreenState extends State<FilesScreen> {
     final res = await FilePicker.platform.pickFiles(withData: true);
     final file = res?.files.single;
     if (file == null || file.bytes == null || !mounted) return;
+    await _uploadBytes(file.name, file.bytes!);
+  }
+
+  /// Take a photo with the camera, let the user name it, upload as JPEG.
+  /// The name makes photos findable in the list — nobody should have to open
+  /// pictures one by one to find the one they need.
+  @visibleForTesting
+  Future<void> takePhotoFromCamera() async {
+    final XFile? shot;
+    try {
+      shot = widget.cameraPicker != null
+          ? await widget.cameraPicker!()
+          : await ImagePicker().pickImage(
+              source: ImageSource.camera,
+              imageQuality: 90,
+              preferredCameraDevice: CameraDevice.rear,
+            );
+    } catch (e) {
+      _toast(Exception(e.toString().replaceFirst('Exception: ', '')));
+      return;
+    }
+    if (shot == null || !mounted) return; // user backed out of the camera
+
+    // Downscale to max ~1600px — full-resolution camera shots are 3-8 MB,
+    // which is slow to upload and pointless for documentation photos.
+    // image_picker already re-encodes to JPEG (imageQuality: 90), so the
+    // second pass only runs for shots larger than 1600px. Best-effort: on
+    // failure the original file is uploaded unchanged.
+    List<int>? compressed;
+    String mimeType = shot.mimeType ?? 'image/jpeg';
+    try {
+      // decodeImageDimensions is pure Dart (package:image). Decoding inline is
+      // fast (header parse + downscale-only decode of an already-JPEG shot).
+      final dims = decodeImageDimensions(await shot.readAsBytes());
+      if (dims != null && (dims.$1 > 1600 || dims.$2 > 1600)) {
+        final longest = dims.$1 > dims.$2 ? dims.$1 : dims.$2;
+        final factor = 1600 / longest;
+        final small = await FlutterImageCompress.compressWithFile(
+          shot.path,
+          minWidth: (dims.$1 * factor).round(),
+          minHeight: (dims.$2 * factor).round(),
+          quality: 85,
+          format: CompressFormat.jpeg,
+        );
+        if (small != null && small.isNotEmpty) {
+          compressed = small;
+          mimeType = 'image/jpeg';
+        }
+      }
+    } catch (_) {
+      // compression unavailable / failed — the original upload still works
+    }      final name = await _cameraNameDialog();
+    if (name == null || !mounted) return; // cancelled — the photo is discarded
+    final trimmed = name.trim();
+    final fileName = trimmed.isEmpty
+        ? 'Slika ${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}.jpg'
+        : (trimmed.toLowerCase().endsWith('.jpg') ? trimmed : '$trimmed.jpg');
+    List<int> bytes;
+    try {
+      bytes = compressed ?? await shot.readAsBytes();
+    } catch (e) {
+      _toast(e);
+      return;
+    }
+    await _uploadBytes(fileName, bytes, contentType: mimeType);
+  }
+
+  /// Dialog right after the shot: the user names the photo so it is easy to
+  /// find in the list later. Cancel throws the photo away.
+  Future<String?> _cameraNameDialog() {
+    final controller = TextEditingController(
+        text: 'Slika ${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}');
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Naziv fotografije'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Naziv slike'),
+          onSubmitted: (v) => Navigator.of(context).pop(v),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Odustani')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(controller.text), child: const Text('Spremi')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _uploadBytes(String fileName, List<int> bytes, {String? contentType}) async {
     setState(() => _busy = true);
     try {
-      await widget.api.upload(widget.projectId, file.name, file.bytes!);
+      await widget.api.upload(widget.projectId, fileName, bytes, contentType: contentType ?? 'application/octet-stream');
       await _load();
     } catch (e) {
       _toast(e);
@@ -181,6 +304,8 @@ class _FilesScreenState extends State<FilesScreen> {
                                     width: 48,
                                     height: 48,
                                     fit: BoxFit.cover,
+                                    // Server-generated thumbnail, sized for the row
+                                    cacheWidth: 96,
                                     errorBuilder: (_, __, ___) =>
                                         const Icon(Icons.insert_drive_file_outlined, color: SR.accent),
                                   ),
@@ -201,14 +326,30 @@ class _FilesScreenState extends State<FilesScreen> {
                 ],
               ),
             ),
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: SR.accent,
-        foregroundColor: Colors.white,
-        onPressed: _busy ? null : _upload,
-        icon: _busy
-            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-            : const Icon(Icons.upload_file),
-        label: const Text('Učitaj'),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton.extended(
+            heroTag: 'upload_file',
+            backgroundColor: SR.panel,
+            foregroundColor: Colors.white,
+            onPressed: _busy ? null : _upload,
+            icon: const Icon(Icons.upload_file),
+            label: const Text('Datoteka'),
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: 'take_photo',
+            backgroundColor: SR.accent,
+            foregroundColor: Colors.white,
+            onPressed: _busy ? null : takePhotoFromCamera,
+            icon: _busy
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.photo_camera_outlined),
+            label: const Text('Slikaj'),
+          ),
+        ],
       ),
     );
   }
@@ -248,11 +389,19 @@ class _GridCard extends StatelessWidget {
               child: isImage
                   ? ClipRRect(
                       borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
-                      child: Image.network(
-                        thumbUrl,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) =>
-                            const Icon(Icons.insert_drive_file_outlined, color: SR.accent, size: 36),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          const ColoredBox(color: SR.panelDeep),
+                          // Server-generated thumbnail (max 420px) — not the
+                          // full original, which stalled on slow connections.
+                          Image.network(
+                            thumbUrl,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Icon(
+                                Icons.insert_drive_file_outlined, color: SR.accent, size: 36),
+                          ),
+                        ],
                       ),
                     )
                   : const Icon(Icons.insert_drive_file_outlined, color: SR.accent, size: 36),
@@ -291,4 +440,18 @@ class _GridCard extends StatelessWidget {
 Future<void> writeFileBytes(String path, List<int> bytes) async {
   final file = File(path);
   await file.writeAsBytes(bytes);
+}
+
+/// (width, height) of an encoded image, or null when it cannot be decoded.
+/// Top-level (pure Dart) so tests can call it directly.
+const (int, int)? Function(Uint8List) decodeImageDimensions = _decodeImageDimensions;
+
+(int, int)? _decodeImageDimensions(Uint8List bytes) {
+  try {
+    final im = img.decodeImage(bytes);
+    if (im == null) return null;
+    return (im.width, im.height);
+  } catch (_) {
+    return null;
+  }
 }

@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- In-app updates: hand downloaded APKs to Android's installer -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Datoteke: take photos with the camera and upload them directly -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <application
         android:label="SolRay"
         android:name="${applicationName}"

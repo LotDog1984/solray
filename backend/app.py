@@ -56,6 +56,11 @@ NTFY_URL = os.getenv("NTFY_URL", "").rstrip("/")
 # phones); fall back to NTFY_BASE_URL so stacks that only set the shared
 # var still expose *something* (LAN-only, works at home).
 NTFY_PUBLIC_URL = (os.getenv("NTFY_PUBLIC_URL") or os.getenv("NTFY_BASE_URL") or "").rstrip("/")
+# 1.12.0: FCM push (HTTP v1 API). Set FCM_PROJECT_ID and point
+# GOOGLE_APPLICATION_CREDENTIALS at a Firebase service-account JSON — without
+# them the API is unchanged and phones fall back to ntfy/in-app notifications.
+FCM_PROJECT_ID = os.getenv("FCM_PROJECT_ID", "")
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:8080").split(",")]
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -197,6 +202,21 @@ class Notification(Base):
     message: Mapped[str] = mapped_column(String(255))
     link: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class PushToken(Base):
+    """1.12.0: FCM device tokens per user — real Google push (Android) that
+    arrives even when the app is killed; the same rows drive APNs later for
+    iOS. One device = one row; a token re-registered by another account
+    (device sold / re-login) simply moves to that account."""
+
+    __tablename__ = "push_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token: Mapped[str] = mapped_column(String(255), unique=True)
+    platform: Mapped[str] = mapped_column(String(20), default="android")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -386,6 +406,78 @@ def task_board_id(db: Session, column_id: int) -> int:
     return column.board_id
 
 
+# --------------------------- FCM push (1.12.0) -----------------------------
+# Google push notifications that arrive even when the app is killed. The
+# backend sends a DATA-ONLY message (title/body/ids in `data`) to every device
+# registered for the user; the app's background handler turns it into a local
+# system notification and deep-links to the board. Data-only (not alert)
+# keeps Android showing exactly one notification — ours — with full control.
+
+_fcm_creds = None  # cached google-auth credentials (auto-refreshed)
+
+
+def _fcm_available() -> bool:
+    return bool(FCM_PROJECT_ID and GOOGLE_APPLICATION_CREDENTIALS)
+
+
+def _fcm_access_token() -> str | None:
+    """OAuth2 access token for the FCM HTTP v1 API (cached, auto-refreshed)."""
+    global _fcm_creds
+    try:
+        if _fcm_creds is None:
+            from google.oauth2 import service_account
+
+            _fcm_creds = service_account.Credentials.from_service_account_file(
+                GOOGLE_APPLICATION_CREDENTIALS,
+                scopes=["https://www.googleapis.com/auth/firebase.messaging"],
+            )
+        if not _fcm_creds.valid:
+            import google.auth.transport.requests
+
+            _fcm_creds.refresh(google.auth.transport.requests.Request())
+        return _fcm_creds.token
+    except Exception:
+        return None  # misconfigured/missing credentials — push silently off
+
+
+def send_fcm(db: Session, user: User, message: str, board_id: int | None = None,
+             board_name: str = "") -> None:
+    """Push to every FCM device registered for the user. Never raises:
+    notification failures must never break the API call that triggered them.
+    Unregistered/expired tokens are pruned so the list stays clean."""
+    if not _fcm_available():
+        return
+    rows = db.scalars(select(PushToken).where(PushToken.user_id == user.id)).all()
+    if not rows:
+        return
+    access = _fcm_access_token()
+    if not access:
+        return
+    data = {"title": "SolRay", "body": message}
+    if board_id is not None:
+        data["boardId"] = str(board_id)
+        data["boardName"] = board_name
+    stale = []
+    for row in rows:
+        try:
+            resp = requests.post(
+                f"https://fcm.googleapis.com/v1/projects/{FCM_PROJECT_ID}/messages:send",
+                headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
+                json={"message": {"token": row.token, "data": data,
+                                  "android": {"priority": "HIGH"}}},
+                timeout=5,
+            )
+            # 404 / UNREGISTERED = the app was uninstalled or the token expired
+            if resp.status_code == 404 or (resp.status_code == 400 and "UNREGISTERED" in resp.text):
+                stale.append(row)
+        except requests.RequestException:
+            pass  # network hiccup — keep the token, next notification retries
+    for row in stale:
+        db.delete(row)
+    if stale:
+        db.commit()
+
+
 def send_ntfy(user: User, title: str, message: str) -> bool:
     """Push to the user's phone via ntfy. Returns True when the server accepted it."""
     if not NTFY_URL or not user.ntfy_topic:
@@ -465,6 +557,11 @@ def notify_task_users(db: Session, actor: User, task: Task) -> None:
     user_ids = {u.id for u in db.scalars(select(User).where(User.username.in_(usernames))).all()}
     if task.assignee_id:
         user_ids.add(task.assignee_id)
+    # Board context for the mobile push deep-link (task → column → board).
+    column = db.get(BoardColumn, task.column_id) if task.column_id else None
+    board = db.get(Board, column.board_id) if column else None
+    board_id = board.id if board else None
+    board_name = board.name if board else ""
     for user_id in user_ids:
         if not user_id:
             continue
@@ -472,6 +569,8 @@ def notify_task_users(db: Session, actor: User, task: Task) -> None:
         message = f"{actor.display_name} vas je tagirao/la u tasku: {task.title}"
         db.add(Notification(user_id=user.id, message=message, link=f"/tasks/{task.id}"))
         send_ntfy(user, "Novi tag", message)
+        # 1.12.0: real device push (FCM) — arrives even when the app is killed
+        send_fcm(db, user, message, board_id=board_id, board_name=board_name)
 
 
 THUMB_SIZE = (420, 420)  # max thumbnail dimensions (JPEG, quality 80)
@@ -1638,10 +1737,6 @@ def is_image(ct: str) -> bool:
     return (ct or "").lower().startswith("image/")
 
 
-def is_image(ct: str) -> bool:
-    return (ct or "").lower().startswith("image/")
-
-
 def make_thumbnail(path: Path) -> bytes | None:
     """JPEG thumbnail bytes for an image file; None when not an image or broken."""
     try:
@@ -1662,13 +1757,24 @@ def store_upload(db: Session, user: User, file: UploadFile, project_id: int | No
     target = folder / stored_name
     with target.open("wb") as handle:
         shutil.copyfileobj(file.file, handle)
-    thumb_bytes = make_thumbnail(target) if is_image(file.content_type or "") else None
+    # Decode the stored bytes to decide if this is really an image — mobile
+    # camera uploads (1.11.0) arrive as application/octet-stream but must still
+    # get thumbnails, while a mislabeled non-image must not.
+    with target.open("rb") as handle:
+        head = handle.read(32)
+    really_image = is_image(file.content_type or "") or head.startswith(
+        (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF8", b"BM", b"II*\x00", b"MM\x00*")
+    )
+    thumb_bytes = make_thumbnail(target) if really_image else None
     row = StoredFile(
         original_name=file.filename or stored_name,
         # relative path under STORAGE_DIR — "Folder/uuid_name" for project files,
         # flat name for legacy files (they live at the storage root)
         stored_name=f"{folder.name}/{stored_name}" if project_id else stored_name,
-        content_type=file.content_type or "application/octet-stream",
+        # Trust sniffed bytes over the client header: camera uploads sent as
+        # application/octet-stream are stored as image/jpeg so the UI shows
+        # them as pictures (thumbnails, grid) instead of a generic file icon.
+        content_type="image/jpeg" if (head.startswith(b"\xff\xd8\xff") and not is_image(file.content_type or "")) else (file.content_type or "application/octet-stream"),
         size=target.stat().st_size,
         uploaded_by_id=user.id,
         project_id=project_id,

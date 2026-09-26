@@ -4,6 +4,14 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
+// 1.12.0: FCM push. Apply the Google Services plugin only when the Firebase
+// config exists — builds without it (fresh clones, CI before the secret is
+// added) keep working and the app gracefully falls back to ntfy notifications.
+def hasFirebaseConfig = file("google-services.json").exists() || file("src/google-services.json").exists()
+if (hasFirebaseConfig) {
+    apply plugin: 'com.google.gms.google-services'
+}
+
 def localProperties = new Properties()
 def localPropertiesFile = rootProject.file('local.properties')
 if (localPropertiesFile.exists()) {

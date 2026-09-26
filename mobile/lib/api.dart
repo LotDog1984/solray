@@ -2,16 +2,20 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// Client for one SolRay instance. The base URL is NEVER baked in — it comes
 /// from the onboarding screen (first run) or stored preferences.
 class Api {
-  Api(this.baseUrl, {this.token});
+  /// [client] is injectable for tests (MockClient); production uses a shared
+  /// keep-alive http.Client.
+  Api(this.baseUrl, {this.token, http.Client? client}) : _client = client ?? http.Client();
 
   final String baseUrl; // e.g. https://tim-a.mediahost.stream (no trailing slash)
   String? token; // JWT after login
+  final http.Client _client;
 
   Uri _u(String path, {Map<String, String>? query}) =>
       Uri.parse('$baseUrl$path').replace(queryParameters: query);
@@ -23,7 +27,7 @@ class Api {
 
   /// Public endpoint — used by onboarding to validate the address.
   Future<Map<String, dynamic>> settings() async {
-    final res = await http.get(_u('/api/settings')).timeout(const Duration(seconds: 12));
+    final res = await _client.get(_u('/api/settings')).timeout(const Duration(seconds: 12));
     if (res.statusCode != 200) {
       throw Exception('Poslužitelj nije SolRay (HTTP ${res.statusCode})');
     }
@@ -31,7 +35,7 @@ class Api {
   }
 
   Future<void> login(String username, String password) async {
-    final res = await http
+    final res = await _client
         .post(_u('/api/auth/login'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'username': username, 'password': password}))
@@ -53,7 +57,7 @@ class Api {
     final req = http.Request(method, _u(path, query: query))
       ..headers.addAll(_auth)
       ..body = jsonEncode(body ?? {});
-    final res = await http.Response.fromStream(await req.send()).timeout(const Duration(seconds: 15));
+    final res = await http.Response.fromStream(await _client.send(req)).timeout(const Duration(seconds: 15));
     if (res.statusCode == 401) throw AuthExpired();
     if (res.statusCode >= 400) throw Exception(_detail(res.body) ?? 'HTTP ${res.statusCode}');
     if (res.body.isEmpty) return null;
@@ -72,16 +76,26 @@ class Api {
 
   // ---- binary / multipart -------------------------------------------------
 
-  /// Upload a file into a project's folder. [bytes] come from file_picker.
+  /// Upload a file into a project's folder. [bytes] come from file_picker or
+  /// the camera capture (1.11.0). [contentType] matters: image uploads are
+  /// stored as images (thumbnails, grid view) — a camera JPEG sent as
+  /// application/octet-stream would render as a generic file icon.
   Future<Map<String, dynamic>> upload(int? projectId, String fileName, List<int> bytes,
       {String contentType = 'application/octet-stream'}) async {
+    MediaType mediaType;
+    try {
+      mediaType = MediaType.parse(contentType);
+    } catch (_) {
+      mediaType = MediaType('application', 'octet-stream');
+    }
     final req = http.MultipartRequest(
       'POST',
       _u(projectId != null ? '/api/projects/$projectId/files' : '/api/files'),
     )
       ..headers['Authorization'] = 'Bearer $token'
-      ..files.add(http.MultipartFile.fromBytes('file', bytes, filename: fileName));
-    final streamed = await req.send().timeout(const Duration(seconds: 120));
+      ..files.add(http.MultipartFile.fromBytes('file', bytes,
+          filename: fileName, contentType: mediaType));
+    final streamed = await _client.send(req).timeout(const Duration(seconds: 120));
     final res = await http.Response.fromStream(streamed);
     if (res.statusCode == 401) throw AuthExpired();
     if (res.statusCode >= 400) throw Exception(_detail(res.body) ?? 'Prijenos nije uspio (HTTP ${res.statusCode})');
@@ -90,7 +104,7 @@ class Api {
 
   /// Authenticated bytes of a stored file (download / open / share).
   Future<List<int>> download(int fileId) async {
-    final res = await http
+    final res = await _client
         .get(_u('/api/files/$fileId/download'), headers: {'Authorization': 'Bearer $token'})
         .timeout(const Duration(seconds: 120));
     if (res.statusCode == 401) throw AuthExpired();
