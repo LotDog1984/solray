@@ -47,6 +47,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       text: (widget.session.settings['default_todo_list'] as String?) ?? 'Nabava');
   bool _checkingNtfy = false;
   String? _ntfyCheck;
+  bool _testingPush = false; // 1.12.2: Google push diagnostic
+  String? _pushCheck;
 
   // ---- Ažuriranja (in-app updater) ------------------------------------------
   String _appVersion = '…';
@@ -175,6 +177,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     if (mounted) {
       setState(() => _checkingNtfy = false);
+    }
+  }
+
+  /// 1.12.2: end-to-end Google push test — asks the server to send a real
+  /// FCM message to THIS account's registered device and shows the exact
+  /// result (not configured / not registered / sent / Google's error).
+  Future<void> _testPush() async {
+    setState(() {
+      _testingPush = true;
+      _pushCheck = null;
+    });
+    final hasToken = PushNotifications.hasToken;
+    try {
+      // Make sure registration is fresh before judging the pipeline.
+      if (hasToken) await PushNotifications.registerWithBackend(api);
+      final d = await api.post('/api/me/push/test', {}) as Map<String, dynamic>;
+      final reason = d['reason'] as String? ?? '';
+      if (d['ok'] == true) {
+        setState(() => _pushCheck = '✅ $reason');
+      } else {
+        setState(() => _pushCheck = '⚠️ $reason');
+      }
+    } catch (e) {
+      setState(() => _pushCheck =
+          '❌ Server nije odgovorio ($e). Stari backend bez 1.12.2 ili mreža?');
+    } finally {
+      if (mounted) setState(() => _testingPush = false);
     }
   }
 
@@ -409,6 +438,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
               label: const Text('Otvori sistemske postavke'),
             ),
           ),
+
+        // 1.12.2: end-to-end Google push diagnostic — one tap, exact answer.
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  FilledButton.icon(
+                    onPressed: _testingPush ? null : _testPush,
+                    icon: const Icon(Icons.notifications_active),
+                    label: const Text('Testiraj Google push'),
+                  ),
+                  if (_pushCheck != null) ...[
+                    const SizedBox(height: 8),
+                    Text(_pushCheck!, style: Theme.of(context).textTheme.bodySmall),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
 
         _sectionTitle('Obavijesti (ntfy)'),
         Card(

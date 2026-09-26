@@ -908,6 +908,56 @@ def remove_push_token(payload: PushTokenRemoveIn, db: Db, user: CurrentUser):
     return {"ok": True}
 
 
+@app.post("/api/me/push/test")
+def test_fcm_push(db: Db, user: CurrentUser):
+    """1.12.2: one-tap diagnostic for real FCM push. Reports exactly what the
+    server sees for THIS account: whether FCM is configured at all, how many
+    devices are registered and when, and — when a device is registered —
+    actually sends a test message so the phone either shows a banner or the
+    response pinpoints the failing hop. Every failure is returned as text,
+    never raised (notifications must never break the API)."""
+    if not _fcm_available():
+        return {"ok": False,
+                "reason": "Server nema postavljen FCM (FCM_PROJECT_ID / GOOGLE_APPLICATION_CREDENTIALS) — Google push je isključen na poslužitelju.",
+                "configured": False, "devices": 0}
+    rows = db.scalars(select(PushToken).where(PushToken.user_id == user.id)).all()
+    if not rows:
+        return {"ok": False,
+                "reason": "Ovaj telefon nije registriran za Google push — ažurirajte aplikaciju na 1.12.2+ i otvorite je jednom (Registriraj se).",
+                "configured": True, "devices": 0}
+    access = _fcm_access_token()
+    if not access:
+        return {"ok": False,
+                "reason": "FCM ključ nije ispravan (provjerite service-account JSON i GOOGLE_APPLICATION_CREDENTIALS).",
+                "configured": True, "devices": len(rows)}
+    device = rows[0]
+    created = device.created_at.isoformat() if device.created_at else ""
+    try:
+        resp = requests.post(
+            f"https://fcm.googleapis.com/v1/projects/{FCM_PROJECT_ID}/messages:send",
+            headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
+            json={"message": {"token": device.token,
+                              "notification": {"title": "SolRay test", "body": "Ako ovo vidite, Google push radi 🎉"},
+                              "data": {"title": "SolRay test", "body": "Ako ovo vidite, Google push radi 🎉"},
+                              "android": {"priority": "HIGH",
+                                          "notification": {"channel_id": "solray", "sound": "default"}}}},
+            timeout=8,
+        )
+    except requests.RequestException as e:
+        return {"ok": False, "reason": f"Mrežna greška prema Googleu: {e}",
+                "configured": True, "devices": len(rows)}
+    if resp.status_code == 200:
+        return {"ok": True, "devices": len(rows), "registered_at": created,
+                "reason": f"Poslano na {len(rows)} registriranih uređaja — banner bi trebao biti vidljiv sada."}
+    detail = ""
+    try:
+        detail = resp.json().get("error", {}).get("message", "")
+    except Exception:
+        detail = resp.text[:300]
+    return {"ok": False, "reason": f"Google je odbio poruku (HTTP {resp.status_code}): {detail}",
+            "configured": True, "devices": len(rows)}
+
+
 @app.post("/api/me/ntfy/test")
 def test_ntfy(db: Db, user: CurrentUser):
     """Send a test push so the user can verify their phone setup."""

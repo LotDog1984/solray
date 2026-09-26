@@ -23,10 +23,8 @@ class PushNotifications {
   static bool _initialized = false;
   static bool _listening = false;
 
-  /// Whether a message arrived with a `notification` block (the system shows
-  /// it itself) — the foreground listener must NOT post a second local one.
-  static bool hasNotificationBlock(RemoteMessage message) =>
-      message.notification != null;
+  /// True when a Firebase token exists on this device (registered or not).
+  static bool get hasToken => _currentToken != null;
 
   /// Initialize Firebase + request the token. Returns the FCM token or null
   /// (no config / permission denied / plugin unavailable — all non-fatal).
@@ -128,10 +126,12 @@ class PushNotifications {
     if (!_initialized || _listening) return;
     _listening = true;
     FirebaseMessaging.onMessage.listen((message) {
-      // 1.12.1: messages carrying a notification block are displayed by the
-      // OS integration itself — posting our local one would show TWO banners
-      // while the app is open.
-      if (hasNotificationBlock(message)) return;
+      // 1.12.2: ALWAYS post the local notification in the foreground. FCM
+      // *data* messages are never auto-displayed by the OS integration —
+      // even when the payload carries a notification block — so the 1.12.1
+      // skip produced total silence while the app was open. Foreground is
+      // the only place we control display; background/terminated delivery
+      // is displayed by the OS integration itself.
       showFromData(message.data);
     });
     FirebaseMessaging.instance.onTokenRefresh.listen((token) {
