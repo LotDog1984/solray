@@ -12,10 +12,12 @@ import 'theme.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final launchPayload = await Notifications.init();
-  // 1.12.0: FCM background handler — notifications arriving while the app is
-  // killed/backgrounded are turned into system notifications in a separate
-  // isolate. Registered before runApp, as Firebase requires. No-op (caught)
-  // when the Firebase config (google-services.json) is absent.
+  // 1.12.0: FCM background handler — data-only messages arriving while the
+  // app is killed/backgrounded are turned into system notifications in a
+  // separate isolate. 1.12.1: the backend's mention pushes now carry a
+  // notification block that Android displays itself, so this handler is a
+  // fallback only. Registered before runApp, as Firebase requires. No-op
+  // (caught) when the Firebase config (google-services.json) is absent.
   try {
     FirebaseMessaging.onBackgroundMessage(PushNotifications.firebaseMessagingBackgroundHandler);
   } catch (_) {

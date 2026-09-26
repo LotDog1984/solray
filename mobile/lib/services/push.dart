@@ -23,6 +23,11 @@ class PushNotifications {
   static bool _initialized = false;
   static bool _listening = false;
 
+  /// Whether a message arrived with a `notification` block (the system shows
+  /// it itself) — the foreground listener must NOT post a second local one.
+  static bool hasNotificationBlock(RemoteMessage message) =>
+      message.notification != null;
+
   /// Initialize Firebase + request the token. Returns the FCM token or null
   /// (no config / permission denied / plugin unavailable — all non-fatal).
   static Future<String?> init() async {
@@ -48,13 +53,32 @@ class PushNotifications {
     return _currentToken;
   }
 
-  /// Push the FCM token to the user's own SolRay instance.
+  /// Push the FCM token to the user's own SolRay instance. 1.12.1: retries a
+  /// few times (boot races a waking phone network — the old fire-and-forget
+  /// single attempt left the device unregistered for hours); re-reads the
+  /// token after each wait so a rotation during retry isn't lost.
   static Future<void> registerWithBackend(Api api) async {
     if (_currentToken == null) return;
-    try {
-      await api.post('/api/me/push-token', {'token': _currentToken, 'platform': 'android'});
-    } catch (_) {
-      // retry happens on the next resume / token refresh
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        await Future<void>.delayed(Duration(seconds: 2 * attempt));
+        try {
+          _currentToken = await FirebaseMessaging.instance.getToken();
+        } catch (_) {}
+        if (_currentToken == null) return;
+      }
+      try {
+        final res = await api.post(
+            '/api/me/push-token', {'token': _currentToken, 'platform': 'android'});
+        final echoed = res['token'] as String?;
+        if (echoed != null && echoed != _currentToken) {
+          _currentToken = echoed; // rotated between request and response
+        }
+        return;
+      } catch (_) {
+        // transient network/auth error — retry, then stay silent (the next
+        // app resume retries again)
+      }
     }
   }
 
@@ -104,6 +128,10 @@ class PushNotifications {
     if (!_initialized || _listening) return;
     _listening = true;
     FirebaseMessaging.onMessage.listen((message) {
+      // 1.12.1: messages carrying a notification block are displayed by the
+      // OS integration itself — posting our local one would show TWO banners
+      // while the app is open.
+      if (hasNotificationBlock(message)) return;
       showFromData(message.data);
     });
     FirebaseMessaging.instance.onTokenRefresh.listen((token) {

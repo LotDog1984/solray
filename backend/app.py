@@ -29,6 +29,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine, 
+    delete,
     select, 
     func,
     or_,
@@ -319,6 +320,18 @@ class NtfyIn(BaseModel):
     topic: str | None = None
 
 
+class PushTokenIn(BaseModel):
+    """1.12.1: FCM device registration — the mobile app posts this at login
+    and on every app resume."""
+
+    token: str
+    platform: str = "android"
+
+
+class PushTokenRemoveIn(BaseModel):
+    token: str
+
+
 DEFAULT_APP_NAME = "Private Workspace"
 APP_NAME_KEY = "app_name"
 DEFAULT_COLUMNS_KEY = "default_columns"
@@ -408,10 +421,15 @@ def task_board_id(db: Session, column_id: int) -> int:
 
 # --------------------------- FCM push (1.12.0) -----------------------------
 # Google push notifications that arrive even when the app is killed. The
-# backend sends a DATA-ONLY message (title/body/ids in `data`) to every device
-# registered for the user; the app's background handler turns it into a local
-# system notification and deep-links to the board. Data-only (not alert)
-# keeps Android showing exactly one notification — ours — with full control.
+# backend sends a NOTIFICATION message (title/body in the notification block,
+# ids in `data` for the tap deep-link) to every device registered for the
+# user; Google's OS integration displays the system notification itself.
+# 1.12.1: data-only was deliberately replaced — Android queues data-only
+# messages while the app is killed and often delivers them only when a later
+# message or app start wakes the process, which looked like "notifications
+# arrive late or never". With a notification block the device is woken and
+# the banner shows immediately; foreground behavior is unchanged (the app
+# still renders its own local notification from onMessage).
 
 _fcm_creds = None  # cached google-auth credentials (auto-refreshed)
 
@@ -464,7 +482,9 @@ def send_fcm(db: Session, user: User, message: str, board_id: int | None = None,
                 f"https://fcm.googleapis.com/v1/projects/{FCM_PROJECT_ID}/messages:send",
                 headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
                 json={"message": {"token": row.token, "data": data,
-                                  "android": {"priority": "HIGH"}}},
+                                  "notification": {"title": "SolRay", "body": message},
+                                  "android": {"priority": "HIGH",
+                                              "notification": {"channel_id": "solray", "sound": "default"}}}},
                 timeout=5,
             )
             # 404 / UNREGISTERED = the app was uninstalled or the token expired
@@ -858,6 +878,34 @@ def update_ntfy(payload: NtfyIn, db: Db, user: CurrentUser):
     db.commit()
     db.refresh(user)
     return user
+
+
+@app.post("/api/me/push-token")
+def register_push_token(payload: PushTokenIn, db: Db, user: CurrentUser):
+    """1.12.1: register an FCM device token for the logged-in user (the mobile
+    app calls this at login and on every resume). One device = one row; a
+    token re-registered under another account (device sold / re-login) moves
+    to that account. Returns the token so the app can detect rotation."""
+    token = payload.token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Nedostaje token")
+    existing = db.scalar(select(PushToken).where(PushToken.token == token))
+    if existing:
+        existing.user_id = user.id
+        existing.platform = payload.platform
+    else:
+        db.add(PushToken(user_id=user.id, token=token, platform=payload.platform))
+    db.commit()
+    return {"ok": True, "token": token}
+
+
+@app.post("/api/me/push-token/remove")
+def remove_push_token(payload: PushTokenRemoveIn, db: Db, user: CurrentUser):
+    """Logout / server change — drop this device's token so the instance
+    stops pushing to it. Only the owner's row is deleted."""
+    db.execute(delete(PushToken).where(PushToken.token == payload.token, PushToken.user_id == user.id))
+    db.commit()
+    return {"ok": True}
 
 
 @app.post("/api/me/ntfy/test")
