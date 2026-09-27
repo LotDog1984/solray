@@ -26,6 +26,7 @@ class FilesScreen extends StatefulWidget {
     required this.projectName,
     this.syncListener,
     this.cameraPicker,
+    this.galleryPicker,
   });
 
   final Api api;
@@ -37,6 +38,10 @@ class FilesScreen extends StatefulWidget {
   final void Function(String scope, void Function() onEvent)? syncListener;
   @visibleForTesting
   final Future<XFile?> Function()? cameraPicker;
+
+  /// 1.14.1: upload an ALREADY TAKEN photo from the phone's gallery.
+  @visibleForTesting
+  final Future<XFile?> Function()? galleryPicker;
 
   @override
   State<FilesScreen> createState() => _FilesScreenState();
@@ -110,9 +115,27 @@ class _FilesScreenState extends State<FilesScreen> {
     await _uploadBytes(file.name, file.bytes!);
   }
 
-  /// Take a photo with the camera, let the user name it, upload as JPEG.
-  /// The name makes photos findable in the list — nobody should have to open
-  /// pictures one by one to find the one they need.
+  /// 1.14.1: pick an existing photo from the gallery and upload it through
+  /// the same compress → name → upload pipeline as a camera shot.
+  @visibleForTesting
+  Future<void> pickPhotoFromGallery() async {
+    final XFile? picked;
+    try {
+      picked = widget.galleryPicker != null
+          ? await widget.galleryPicker!()
+          : await ImagePicker().pickImage(
+              source: ImageSource.gallery,
+              imageQuality: 90,
+            );
+    } catch (e) {
+      _toast(Exception(e.toString().replaceFirst('Exception: ', '')));
+      return;
+    }
+    if (picked == null || !mounted) return; // user backed out of the picker
+    await _processAndUploadShot(picked);
+  }
+
+  /// Take a photo with the camera and upload it through the same pipeline.
   @visibleForTesting
   Future<void> takePhotoFromCamera() async {
     final XFile? shot;
@@ -129,12 +152,16 @@ class _FilesScreenState extends State<FilesScreen> {
       return;
     }
     if (shot == null || !mounted) return; // user backed out of the camera
+    await _processAndUploadShot(shot);
+  }
 
-    // Downscale to max ~1600px — full-resolution camera shots are 3-8 MB,
-    // which is slow to upload and pointless for documentation photos.
-    // image_picker already re-encodes to JPEG (imageQuality: 90), so the
-    // second pass only runs for shots larger than 1600px. Best-effort: on
-    // failure the original file is uploaded unchanged.
+  /// Shared post-pick pipeline (camera AND gallery): downscale huge photos,
+  /// ask for a name, upload as JPEG. Full-resolution shots are 3-8 MB —
+  /// slow to upload and pointless for documentation photos. image_picker
+  /// already re-encodes to JPEG (imageQuality: 90), so the second pass only
+  /// runs for images larger than 1600px. Best-effort: on failure the
+  /// original file is uploaded unchanged.
+  Future<void> _processAndUploadShot(XFile shot) async {
     List<int>? compressed;
     String mimeType = shot.mimeType ?? 'image/jpeg';
     try {
@@ -158,11 +185,12 @@ class _FilesScreenState extends State<FilesScreen> {
       }
     } catch (_) {
       // compression unavailable / failed — the original upload still works
-    }      final name = await _cameraNameDialog();
+    }
+    final name = await _photoNameDialog(prefill: _defaultNameForShot(shot));
     if (name == null || !mounted) return; // cancelled — the photo is discarded
     final trimmed = name.trim();
     final fileName = trimmed.isEmpty
-        ? 'Slika ${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}.jpg'
+        ? _defaultNameForShot(shot)
         : (trimmed.toLowerCase().endsWith('.jpg') ? trimmed : '$trimmed.jpg');
     List<int> bytes;
     try {
@@ -174,11 +202,20 @@ class _FilesScreenState extends State<FilesScreen> {
     await _uploadBytes(fileName, bytes, contentType: mimeType);
   }
 
-  /// Dialog right after the shot: the user names the photo so it is easy to
+  /// Default file name for a shot: keep the gallery file's own name (without
+  /// extension) when it has one — people recognize their photos that way —
+  /// otherwise today's date like the camera flow.
+  String _defaultNameForShot(XFile shot) {
+    final original = shot.name;
+    final base = original.replaceAll(RegExp(r'\.[^.]+$'), '').trim();
+    if (base.isNotEmpty && base.toLowerCase() != 'image') return '$base.jpg';
+    return 'Slika ${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}.jpg';
+  }
+
+  /// Dialog before the upload: the user names the photo so it is easy to
   /// find in the list later. Cancel throws the photo away.
-  Future<String?> _cameraNameDialog() {
-    final controller = TextEditingController(
-        text: 'Slika ${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}');
+  Future<String?> _photoNameDialog({String? prefill}) {
+    final controller = TextEditingController(text: prefill ?? '');
     return showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
@@ -379,6 +416,16 @@ class _FilesScreenState extends State<FilesScreen> {
             onPressed: _busy ? null : _upload,
             icon: const Icon(Icons.upload_file),
             label: const Text('Datoteka'),
+          ),
+          const SizedBox(height: 12),
+          // 1.14.1: upload an already-taken photo from the gallery.
+          FloatingActionButton.extended(
+            heroTag: 'upload_gallery',
+            backgroundColor: SR.panel,
+            foregroundColor: Colors.white,
+            onPressed: _busy ? null : pickPhotoFromGallery,
+            icon: const Icon(Icons.photo_library_outlined),
+            label: const Text('Galerija'),
           ),
           const SizedBox(height: 12),
           FloatingActionButton.extended(

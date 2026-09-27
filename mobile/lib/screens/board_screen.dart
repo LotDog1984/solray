@@ -40,6 +40,13 @@ class _BoardScreenState extends State<BoardScreen> {
   String? _error;
   void Function()? _syncCancel;
 
+  // 1.14.1: adding a task/Nabava item rebuilds the horizontal board list,
+  // which used to jump back to the first column — after every single add
+  // the user had to scroll all the way to the column they were working in.
+  // The horizontal position is now remembered across reloads.
+  final ScrollController _hScroll = ScrollController();
+  double? _savedScrollOffset;
+
   @override
   void initState() {
     super.initState();
@@ -69,11 +76,18 @@ class _BoardScreenState extends State<BoardScreen> {
   @override
   void dispose() {
     _syncCancel?.call();
+    _hScroll.dispose();
     super.dispose();
   }
 
   Future<void> _load({bool silent = false}) async {
-    if (!silent) setState(() => _loading = true);
+    // 1.14.1: remember the horizontal position BEFORE the rebuild wipes it.
+    if (_hScroll.hasClients) {
+      _savedScrollOffset = _hScroll.offset;
+    }
+    // Spinner only on the very first load — with data on screen the rebuild
+    // is silent (keeps the scroll position, avoids a full-screen flash).
+    if (!silent && _board == null) setState(() => _loading = true);
     try {
       final b = await widget.api.get('/api/boards/${widget.boardId}') as Map<String, dynamic>;
       Map<String, dynamic>? settings;
@@ -88,6 +102,20 @@ class _BoardScreenState extends State<BoardScreen> {
         _settings = settings;
         _loading = false;
       });
+      // 1.14.1: restore the horizontal position after the rebuild — the user
+      // stays on the column they were working in (adding a task or a Nabava
+      // item used to throw the board all the way back to the first column).
+      // The post-frame callback runs after the new layout pass, so the fresh
+      // maxScrollExtent (new column/task widths) is already known; clamping
+      // covers a board that shrank while we were away (remote column delete).
+      if (_savedScrollOffset != null) {
+        final target = _savedScrollOffset!;
+        _savedScrollOffset = null;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_hScroll.hasClients) return;
+          _hScroll.jumpTo(target.clamp(0.0, _hScroll.position.maxScrollExtent));
+        });
+      }
     } on AuthExpired {
       if (mounted) _popExpired();
     } catch (e) {
@@ -289,7 +317,10 @@ class _BoardScreenState extends State<BoardScreen> {
   }
 
   int _columnIdOfTask(Map<String, dynamic> task) {
-    // Fallback only — the dialog also offers an explicit column picker.
+    // 1.14.1: the API now returns the task's owning column. Fallback: the
+    // first column (only for old backends without column_id in the payload).
+    final own = task['column_id'] as int?;
+    if (own != null) return own;
     final cols = _columnRefs;
     return cols.isNotEmpty ? cols.first.id : 0;
   }
@@ -512,6 +543,7 @@ class _BoardScreenState extends State<BoardScreen> {
                   onRefresh: _load,
                   child: ListView(
                     scrollDirection: Axis.horizontal,
+                    controller: _hScroll,
                     padding: const EdgeInsets.all(12),
                     children: [
                       for (final (columnIndex, col) in columns.indexed)

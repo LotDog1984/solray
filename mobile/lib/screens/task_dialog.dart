@@ -121,8 +121,11 @@ class _TaskFormState extends State<_TaskForm> {
           'items': itemsJson,
         });
       } else {
+        // 1.14.1: include column_id ONLY when the user changed it in the
+        // picker — sending the old default used to move the task to column 1.
+        final changedColumn = _columnId != widget.initialColumnId;
         await widget.api.patch('/api/tasks/${existing['id']}', {
-          'column_id': _columnId,
+          if (changedColumn) 'column_id': _columnId,
           'title': _title.text.trim(),
           'description': _desc.text,
           'assignee_id': _assigneeId,

@@ -35,6 +35,7 @@ from sqlalchemy import (
     func,
     or_,
     text,
+    update,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
@@ -328,11 +329,13 @@ class TaskItemIn(BaseModel):
 
 
 class TaskIn(BaseModel):
-    column_id: int
+    # 1.14.1: column_id/position optional on PATCH (omitted = keep current);
+    # POST /api/tasks always sends both explicitly.
+    column_id: int | None = None
     title: str
     description: str = ""
     assignee_id: int | None = None
-    position: int = 0
+    position: int | None = None
     completed: bool | None = None
     items: list[TaskItemIn] | None = None  # None = don't touch checklist; list = replace it
 
@@ -1309,6 +1312,19 @@ def delete_user(user_id: int, db: Db, user: CurrentUser):
     if target.is_admin and target.id != user.id:
         raise HTTPException(status_code=403, detail="Nemate dozvolu za brisanje administratora")
 
+    # 1.14.1: several tables reference users WITHOUT ondelete CASCADE
+    # (projects.owner_id, boards.owner_id, tasks.created_by_id/assignee_id,
+    # files.uploaded_by_id) — deleting anyone who ever created something hit
+    # the FK constraint and surfaced as "Internal Server Error". Re-link the
+    # owned rows to the acting admin first (shared workspace: nothing is
+    # per-user), unassign tasks, then delete. Notifications/push rows already
+    # cascade at the DB level.
+    db.execute(update(Project).where(Project.owner_id == user_id).values(owner_id=user.id))
+    db.execute(update(Board).where(Board.owner_id == user_id).values(owner_id=user.id))
+    db.execute(update(Task).where(Task.created_by_id == user_id).values(created_by_id=user.id))
+    db.execute(update(Task).where(Task.assignee_id == user_id).values(assignee_id=None))
+    db.execute(update(StoredFile).where(StoredFile.uploaded_by_id == user_id).values(uploaded_by_id=user.id))
+
     db.delete(target)
     db.commit()
     return {"ok": True}
@@ -1712,6 +1728,10 @@ def serialize_task(task: Task) -> dict:
         "id": task.id,
         "title": task.title,
         "description": task.description,
+        # 1.14.1: the owning column — mobile clients need it so EDIT keeps a
+        # task in its column instead of defaulting to the first one (the PATCH
+        # endpoint applies column_id unconditionally).
+        "column_id": task.column_id,
         "assignee_id": task.assignee_id,
         "assignee": task.assignee.display_name if task.assignee else None,
         "position": task.position,
@@ -1786,11 +1806,15 @@ def update_task(task_id: int, payload: TaskIn, db: Db, user: CurrentUser):
     if not task:
         raise HTTPException(status_code=404, detail="Task ne postoji")
     ensure_board_access(db, user, task_board_id(db, task.column_id))
-    task.column_id = payload.column_id
+    # 1.14.1: apply column_id only when the client actually sent it (additive
+    # contract) — older/simpler clients omit it and the task must NOT move.
+    if payload.column_id is not None:
+        task.column_id = payload.column_id
     task.title = payload.title.strip() or task.title
     task.description = payload.description
     task.assignee_id = payload.assignee_id
-    task.position = payload.position
+    if payload.position is not None:
+        task.position = payload.position
     # Checklist editor may replace items wholesale (matched by id when present).
     if payload.items is not None:
         existing = {i.id: i for i in task.items}
