@@ -186,11 +186,11 @@ class _FilesScreenState extends State<FilesScreen> {
     } catch (_) {
       // compression unavailable / failed — the original upload still works
     }
-    final name = await _photoNameDialog(prefill: _defaultNameForShot(shot));
+    final name = await _photoNameDialog(prefill: defaultPhotoName(shot.name));
     if (name == null || !mounted) return; // cancelled — the photo is discarded
     final trimmed = name.trim();
     final fileName = trimmed.isEmpty
-        ? _defaultNameForShot(shot)
+        ? defaultPhotoName(shot.name)
         : (trimmed.toLowerCase().endsWith('.jpg') ? trimmed : '$trimmed.jpg');
     List<int> bytes;
     try {
@@ -200,16 +200,6 @@ class _FilesScreenState extends State<FilesScreen> {
       return;
     }
     await _uploadBytes(fileName, bytes, contentType: mimeType);
-  }
-
-  /// Default file name for a shot: keep the gallery file's own name (without
-  /// extension) when it has one — people recognize their photos that way —
-  /// otherwise today's date like the camera flow.
-  String _defaultNameForShot(XFile shot) {
-    final original = shot.name;
-    final base = original.replaceAll(RegExp(r'\.[^.]+$'), '').trim();
-    if (base.isNotEmpty && base.toLowerCase() != 'image') return '$base.jpg';
-    return 'Slika ${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}.jpg';
   }
 
   /// Dialog before the upload: the user names the photo so it is easy to
@@ -545,6 +535,16 @@ Future<void> writeFileBytes(String path, List<int> bytes) async {
 /// (width, height) of an encoded image, or null when it cannot be decoded.
 /// Top-level (pure Dart) so tests can call it directly.
 const (int, int)? Function(Uint8List) decodeImageDimensions = _decodeImageDimensions;
+
+/// Default file name for a picked/taken photo: keep the original name (without
+/// extension) when it is meaningful — people recognize their photos that way —
+/// otherwise today's date like the camera flow. Top-level (pure Dart) so
+/// tests can call it directly. 1.14.1.
+String defaultPhotoName(String originalName) {
+  final base = originalName.replaceAll(RegExp(r'\.[^.]+$'), '').trim();
+  if (base.isNotEmpty && base.toLowerCase() != 'image') return '$base.jpg';
+  return 'Slika ${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}.jpg';
+}
 
 (int, int)? _decodeImageDimensions(Uint8List bytes) {
   try {

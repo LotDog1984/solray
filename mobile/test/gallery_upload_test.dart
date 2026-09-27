@@ -16,6 +16,16 @@ import 'package:solray/screens/files_screen.dart';
 Uint8List jpegBytes({int w = 320, int h = 240}) =>
     Uint8List.fromList(img.encodeJpg(img.Image(width: w, height: h), quality: 90));
 
+/// The file-part bytes of a multipart body (private helper duplicated from
+/// files_screen_test.dart — library-private top-levels don't cross files).
+List<int> _partBytes(List<int> body, String contentType) {
+  final boundary = RegExp(r'boundary=(.+)$').firstMatch(contentType)!.group(1)!;
+  final s = latin1.decode(body); // byte-preserving for marker search
+  final headerEnd = s.indexOf('\r\n\r\n') + 4;
+  final end = s.indexOf('\r\n--$boundary', headerEnd);
+  return body.sublist(headerEnd, end);
+}
+
 Api _api(void Function(String filename, String contentType, List<int> bytes) onUpload) {
   return Api('https://x.test', token: 't',
       client: MockClient.streaming((req, bodyStream) async {
@@ -39,100 +49,98 @@ Api _api(void Function(String filename, String contentType, List<int> bytes) onU
   }));
 }
 
-FilesScreen _screen(
+Widget _screen(
   Api api, {
-  void Function(String scope, void Function() onEvent)? syncListener,
   Future<XFile?> Function()? galleryPicker,
 }) =>
     FilesScreen(
       api: api,
       projectId: 7,
       projectName: 'Test',
-      syncListener: syncListener,
+      syncListener: (_, __) {},
       galleryPicker: galleryPicker,
     );
 
-XFile _photo(Uint8List bytes, String name) {
-  final file = XFile.fromData(bytes, name: name, mimeType: 'image/jpeg');
-  return file;
-}
+/// An in-memory XFile standing in for the gallery pick. NOTE: XFile.fromData
+/// has no name (XFile.name derives from a path), so the flow correctly falls
+/// back to the date default — real gallery picks DO carry names, covered by
+/// the defaultPhotoName unit tests below.
+XFile _photo(Uint8List bytes) =>
+    XFile.fromData(bytes, mimeType: 'image/jpeg');
 
 void main() {
-  testWidgets('gallery upload keeps the original file name and compresses nothing under 1600px',
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('defaultPhotoName (1.14.1)', () {
+    test('keeps a meaningful gallery file name, forcing .jpg', () {
+      expect(defaultPhotoName('uzu_luka_2026.jpeg'), 'uzu_luka_2026.jpg');
+      expect(defaultPhotoName('vacation.PNG'), 'vacation.jpg');
+      expect(defaultPhotoName('IMG_1234'), 'IMG_1234.jpg');
+    });
+
+    test('falls back to the today-date default for meaningless names', () {
+      final now = DateTime.now();
+      final expected = 'Slika ${now.day}.${now.month}.${now.year}.jpg';
+      expect(defaultPhotoName('image.jpg'), expected);
+      expect(defaultPhotoName(''), expected);
+      expect(defaultPhotoName('   .jpg'), expected);
+    });
+  });
+
+  testWidgets('1.14.1: three actions — Datoteka, Galerija, Slikaj', (tester) async {
+    final api = _api((filename, type, bytes) {});
+    await tester.pumpWidget(MaterialApp(home: _screen(api)));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Datoteka'), findsOneWidget);
+    expect(find.text('Galerija'), findsOneWidget);
+    expect(find.text('Slikaj'), findsOneWidget);
+  });
+
+  testWidgets('gallery pick flows to the naming dialog and uploads as image/jpeg',
       (tester) async {
     Uint8List? uploaded;
     String? uploadedName;
     String? uploadedType;
     final api = _api((name, type, bytes) {
-      uploaded = bytes;
+      uploaded = Uint8List.fromList(bytes);
       uploadedName = name;
       uploadedType = type;
     });
 
-    final screen = _screen(
-      api,
-      galleryPicker: () async => _photo(jpegBytes(), 'uzu_luka_2026.jpg'),
-    );
-    await tester.pumpWidget(MaterialApp(home: screen));
+    await tester.pumpWidget(MaterialApp(
+      home: _screen(api, galleryPicker: () async => _photo(jpegBytes())),
+    ));
     await tester.pumpAndSettle();
 
-    await screen.pickPhotoFromGallery();
+    await tester.tap(find.text('Galerija'));
     await tester.pumpAndSettle();
 
-    // The naming dialog opens pre-filled with the gallery file's own name.
+    // Nameless in-memory pick → date default prefill (matches camera flow).
+    final now = DateTime.now();
     expect(find.text('Naziv fotografije'), findsOneWidget);
-    expect(find.text('uzu_luka_2026.jpg'), findsOneWidget);
-    expect(find.text('Spremi'), findsOneWidget);
+    expect(find.text('Slika ${now.day}.${now.month}.${now.year}.jpg'), findsOneWidget);
 
+    await tester.enterText(find.byType(TextField).last, 'uz luka');
     await tester.tap(find.text('Spremi'));
     await tester.pumpAndSettle();
 
-    expect(uploadedName, 'uzu_luka_2026.jpg');
+    expect(uploadedName, 'uz luka.jpg');
     expect(uploadedType, contains('image/jpeg'));
     expect(uploaded, isNotNull);
   });
 
-  testWidgets('gallery upload of an unnamed photo falls back to today-date default',
-      (tester) async {
-    String? uploadedName;
-    final api = _api((name, type, bytes) => uploadedName = name);
-
-    final screen = _screen(
-      api,
-      galleryPicker: () async => _photo(jpegBytes(), 'image.jpg'),
-    );
-    await tester.pumpWidget(MaterialApp(home: screen));
-    await tester.pumpAndSettle();
-
-    await screen.pickPhotoFromGallery();
-    await tester.pumpAndSettle();
-
-    // 'image' is recognized as a meaningless picker name → date default.
-    final now = DateTime.now();
-    expect(
-      find.text('Slika ${now.day}.${now.month}.${now.year}.jpg'),
-      findsOneWidget,
-    );
-
-    await tester.tap(find.text('Spremi'));
-    await tester.pumpAndSettle();
-    expect(uploadedName, 'Slika ${now.day}.${now.month}.${now.year}.jpg');
-  });
-
-  testWidgets('cancelling the gallery flow uploads nothing', (tester) async {
+  testWidgets('cancelling the name dialog uploads nothing', (tester) async {
     var uploads = 0;
     final api = _api((name, type, bytes) => uploads++);
 
-    final screen = _screen(
-      api,
-      galleryPicker: () async => _photo(jpegBytes(), 'vacation.jpg'),
-    );
-    await tester.pumpWidget(MaterialApp(home: screen));
+    await tester.pumpWidget(MaterialApp(
+      home: _screen(api, galleryPicker: () async => _photo(jpegBytes())),
+    ));
     await tester.pumpAndSettle();
 
-    await screen.pickPhotoFromGallery();
+    await tester.tap(find.text('Galerija'));
     await tester.pumpAndSettle();
-
     await tester.tap(find.text('Odustani'));
     await tester.pumpAndSettle();
 
@@ -143,11 +151,12 @@ void main() {
     var uploads = 0;
     final api = _api((name, type, bytes) => uploads++);
 
-    final screen = _screen(api, galleryPicker: () async => null);
-    await tester.pumpWidget(MaterialApp(home: screen));
+    await tester.pumpWidget(MaterialApp(
+      home: _screen(api, galleryPicker: () async => null),
+    ));
     await tester.pumpAndSettle();
 
-    await screen.pickPhotoFromGallery();
+    await tester.tap(find.text('Galerija'));
     await tester.pumpAndSettle();
 
     expect(uploads, 0);
