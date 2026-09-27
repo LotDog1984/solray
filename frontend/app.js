@@ -1378,6 +1378,11 @@ async function renderFiles() {
     .map((f) => {
       const meta = `${formatSize(f.size)} · ${escapeHtml(f.uploaded_by)} · ${formatDate(f.created_at)}`;
       const isImg = (f.content_type || "").toLowerCase().startsWith("image/");
+      const actions = `
+        <div class="file-actions">
+          <button type="button" class="secondary download-file" data-file-id="${f.id}">Preuzmi</button>
+          <button type="button" class="danger delete-file" data-file-id="${f.id}" aria-label="Obriši ${escapeHtml(f.name)}">Obriši</button>
+        </div>`;
       if (state.filesMode === "grid") {
         return `
       <div class="file-card" data-file-id="${f.id}" title="${escapeHtml(f.name)}">
@@ -1386,7 +1391,7 @@ async function renderFiles() {
         </div>
         <strong class="file-name">${escapeHtml(f.name)}</strong>
         <small class="muted">${meta}</small>
-        <button class="secondary download-file" data-file-id="${f.id}">Preuzmi</button>
+        ${actions}
       </div>`;
       }
       return `
@@ -1398,7 +1403,7 @@ async function renderFiles() {
           <strong>${escapeHtml(f.name)}</strong>
           <small class="muted">${meta}</small>
         </div>
-        <button class="secondary download-file" data-file-id="${f.id}">Preuzmi</button>
+        ${actions}
       </div>`;
     })
     .join("");
@@ -1447,8 +1452,25 @@ async function renderFiles() {
     }
   };
 
+  view.querySelectorAll(".delete-file").forEach((btn) => {
+    btn.onclick = async () => {
+      const file = files.find((item) => String(item.id) === btn.dataset.fileId);
+      if (!file || !confirm(`Trajno obrisati datoteku "${file.name}"?`)) return;
+      btn.disabled = true;
+      try {
+        await api.request(`/api/files/${btn.dataset.fileId}`, { method: "DELETE" });
+        await renderFiles();
+      } catch (error) {
+        btn.disabled = false;
+        alert(error.message);
+      }
+    };
+  });
+
   view.querySelectorAll(".download-file").forEach((btn) => {
     btn.onclick = async () => {
+      const file = files.find((item) => String(item.id) === btn.dataset.fileId);
+      if (!file) return;
       try {
         const response = await fetch(`/api/files/${btn.dataset.fileId}/download`, {
           headers: { Authorization: `Bearer ${api.token}` },
@@ -1458,7 +1480,7 @@ async function renderFiles() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = btn.closest(".file-item").querySelector("strong").textContent;
+        a.download = file.name;
         a.click();
         URL.revokeObjectURL(url);
       } catch (error) {

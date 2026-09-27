@@ -212,6 +212,71 @@ void main() {
         findsOneWidget);
   });
 
+  testWidgets('1.13.1: deleting files requires confirmation in list and grid views', (tester) async {
+    var remaining = <Map<String, dynamic>>[
+      {
+        'id': 42,
+        'name': 'Faza 3.jpg',
+        'size': 12345,
+        'content_type': 'image/jpeg',
+        'uploaded_by': 'Branko',
+        'created_at': '2026-09-25T10:00:00Z',
+      },
+      {
+        'id': 43,
+        'name': 'Plan.pdf',
+        'size': 2048,
+        'content_type': 'application/pdf',
+        'uploaded_by': 'Branko',
+        'created_at': '2026-09-25T10:00:00Z',
+      },
+    ];
+    final deletedIds = <int>[];
+    final client = MockClient((req) async {
+      if (req.url.path == '/api/projects/7/files' && req.method == 'GET') {
+        return http.Response(jsonEncode(remaining), 200);
+      }
+      if (req.method == 'DELETE' && req.url.path.startsWith('/api/files/')) {
+        final id = int.parse(req.url.path.split('/').last);
+        deletedIds.add(id);
+        remaining.removeWhere((file) => file['id'] == id);
+        return http.Response('{"ok":true}', 200);
+      }
+      return http.Response('{"detail":"not found"}', 404);
+    });
+    final api = Api('https://x.test', token: 't', client: client);
+
+    await tester.pumpWidget(MaterialApp(home: _screen(api)));
+    await tester.pumpAndSettle();
+
+    // Cancelling leaves the upload untouched.
+    await tester.tap(find.byTooltip('Obriši datoteku').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Faza 3.jpg'), findsOneWidget);
+    await tester.tap(find.text('Odustani'));
+    await tester.pumpAndSettle();
+    expect(deletedIds, isEmpty);
+
+    // Confirm a list-view deletion.
+    await tester.tap(find.byTooltip('Obriši datoteku').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Obriši').last);
+    await tester.pumpAndSettle();
+    expect(deletedIds, [42]);
+    expect(find.text('Faza 3.jpg'), findsNothing);
+    expect(find.text('Plan.pdf'), findsOneWidget);
+
+    // The grid view exposes the same confirmed delete action.
+    await tester.tap(find.byIcon(Icons.grid_view_outlined));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Obriši datoteku'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Obriši').last);
+    await tester.pumpAndSettle();
+    expect(deletedIds, [42, 43]);
+    expect(find.text('Plan.pdf'), findsNothing);
+  });
+
   test('1.11.0: decodeImageDimensions returns image size', () {
     final dims = decodeImageDimensions(jpegBytes(w: 320, h: 240));
     expect(dims?.$1, 320);

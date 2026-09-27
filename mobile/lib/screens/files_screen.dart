@@ -235,6 +235,36 @@ class _FilesScreenState extends State<FilesScreen> {
     }
   }
 
+  Future<void> _deleteFile(Map<String, dynamic> f) async {
+    final name = f['name'] as String? ?? 'datoteku';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Brisanje datoteke'),
+        content: Text('Trajno obrisati "$name"? Ova radnja se ne može poništiti.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Odustani'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+            child: const Text('Obriši'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await widget.api.delete('/api/files/${f['id']}');
+      if (!mounted) return;
+      await _load();
+    } catch (e) {
+      _toast(e);
+    }
+  }
+
   String _size(num bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} kB';
@@ -288,6 +318,7 @@ class _FilesScreenState extends State<FilesScreen> {
                             subtitle: _size(f['size'] as num? ?? 0),
                             onOpen: () => _openFile(f),
                             onShare: () => _shareFile(f),
+                            onDelete: () => _deleteFile(f),
                           ),
                       ],
                     )
@@ -317,9 +348,20 @@ class _FilesScreenState extends State<FilesScreen> {
                             style: const TextStyle(color: SR.muted, fontSize: 12),
                           ),
                           onTap: () => _openFile(f),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.share_outlined, size: 20, color: SR.muted),
-                            onPressed: () => _shareFile(f),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                tooltip: 'Podijeli datoteku',
+                                icon: const Icon(Icons.share_outlined, size: 20, color: SR.muted),
+                                onPressed: () => _shareFile(f),
+                              ),
+                              IconButton(
+                                tooltip: 'Obriši datoteku',
+                                icon: const Icon(Icons.delete_outline, size: 20, color: Colors.redAccent),
+                                onPressed: () => _deleteFile(f),
+                              ),
+                            ],
                           ),
                         ),
                       ),
@@ -363,6 +405,7 @@ class _GridCard extends StatelessWidget {
     required this.subtitle,
     required this.onOpen,
     required this.onShare,
+    required this.onDelete,
   });
 
   final Map<String, dynamic> file;
@@ -371,6 +414,7 @@ class _GridCard extends StatelessWidget {
   final String subtitle;
   final VoidCallback onOpen;
   final VoidCallback onShare;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -418,13 +462,22 @@ class _GridCard extends StatelessWidget {
                     style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                   ),
                   Text(subtitle, style: const TextStyle(color: SR.muted, fontSize: 10)),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: IconButton(
-                      visualDensity: VisualDensity.compact,
-                      icon: const Icon(Icons.share_outlined, size: 16, color: SR.muted),
-                      onPressed: onShare,
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      IconButton(
+                        tooltip: 'Podijeli datoteku',
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.share_outlined, size: 16, color: SR.muted),
+                        onPressed: onShare,
+                      ),
+                      IconButton(
+                        tooltip: 'Obriši datoteku',
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+                        onPressed: onDelete,
+                      ),
+                    ],
                   ),
                 ],
               ),

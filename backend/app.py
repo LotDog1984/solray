@@ -2056,6 +2056,27 @@ def download_file(file_id: int, db: Db, _: CurrentUser):
     return FileResponse(path, media_type=row.content_type, filename=row.original_name)
 
 
+@app.delete("/api/files/{file_id}")
+def delete_file(file_id: int, db: Db, _: CurrentUser):
+    row = db.get(StoredFile, file_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Datoteka ne postoji")
+
+    path = storage_path(row)
+    project_id = row.project_id
+    try:
+        thumbnail_path(path).unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        raise HTTPException(status_code=500, detail="Brisanje datoteke nije uspjelo") from error
+
+    db.delete(row)
+    db.commit()
+    if project_id is not None:
+        notify_change("files", project_id)
+    return {"ok": True}
+
+
 @app.get("/api/notifications")
 def notifications(db: Db, user: CurrentUser):
     rows = db.scalars(select(Notification).where(Notification.user_id == user.id).order_by(Notification.created_at.desc())).all()

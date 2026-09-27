@@ -1098,6 +1098,25 @@ textarea {
   white-space: nowrap;
 }
 
+.file-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.file-actions button {
+  min-height: 34px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.file-card .file-actions button {
+  flex: 1;
+  min-width: 0;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
 .notification {
   display: grid;
   gap: 4px;
