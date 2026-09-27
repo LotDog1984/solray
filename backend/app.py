@@ -245,6 +245,24 @@ class PushToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class PushSubscription(Base):
+    """1.14.0: Web Push subscriptions (browser/PWA) per user. One browser
+    profile on one device = one endpoint row. These power the installable PWA
+    (iPhone home-screen app) whose push needs NO Apple developer account —
+    the instance's own VAPID keys sign the messages (see the webpush section
+    below). Endpoints rotate on re-subscription; unique index keeps them tidy."""
+
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    endpoint: Mapped[str] = mapped_column(Text, unique=True)
+    p256dh: Mapped[str] = mapped_column(String(255))
+    auth: Mapped[str] = mapped_column(String(255))
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class Setting(Base):
     __tablename__ = "settings"
 
@@ -494,6 +512,108 @@ def _fcm_available() -> bool:
     return bool(FCM_PROJECT_ID and GOOGLE_APPLICATION_CREDENTIALS)
 
 
+# --------------------------- webpush (1.14.0) ------------------------------
+# Real push notifications for the PWA (browser / iPhone home-screen app) with
+# ZERO Apple involvement: the instance signs every message with its own VAPID
+# key pair (auto-generated once, stored in the settings table) and delivers via
+# the browser vendor's push service (FCM endpoints for Chrome/Android, Apple's
+# apns.push.apple.com for Safari/iOS 16.4+). This is what makes the iOS app
+# possible without the $99/year developer account — nothing Apple-signed, so
+# nothing can expire.
+
+VAPID_PRIVATE_KEY = "vapid_private_key"
+VAPID_SUBJECT = "vapid_subject"
+
+
+def _vapid_keys(db: Session) -> tuple[str, str] | None:
+    """(private_key_b64url, public_key_p256dh_b64url), auto-generating the pair
+    on first use. Private key = raw 32-byte scalar (py_vapid.from_string eats
+    exactly that format); public key = the 65-byte uncompressed EC point —
+    the same 'p256dh' value browsers receive when subscribing. Returns None
+    when the crypto stack is missing (webpush then silently off)."""
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from py_vapid import Vapid02
+    except Exception:
+        return None
+    stored = get_setting(db, VAPID_PRIVATE_KEY)
+    if not stored:
+        raw = ec.generate_private_key(ec.SECP256R1())
+        raw_bytes = raw.private_numbers().private_value.to_bytes(32, "big")
+        stored = base64.urlsafe_b64encode(raw_bytes).decode().rstrip("=")
+        row = db.get(Setting, VAPID_PRIVATE_KEY)
+        if row:
+            row.value = stored
+        else:
+            db.add(Setting(key=VAPID_PRIVATE_KEY, value=stored))
+        db.commit()
+    try:
+        vapid = Vapid02.from_string(stored)
+        pub_raw = vapid.public_key.public_bytes(
+            serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+        )
+        return stored, base64.urlsafe_b64encode(pub_raw).decode().rstrip("=")
+    except Exception:
+        return None
+
+
+def _vapid_claims(db: Session, endpoint: str) -> dict:
+    """VAPID JWT claims: audience = the push service's origin (from the
+    subscription endpoint), subject = a mailto (constant, changeable in
+    Postavke), exp = now + 12 h (push services reject anything longer)."""
+    origin = "/".join(endpoint.split("/")[:3]) if "://" in endpoint else ""
+    subject = get_setting(db, VAPID_SUBJECT) or "mailto:admin@example.com"
+    return {
+        "aud": origin,
+        "sub": subject,
+        "exp": int((datetime.now(timezone.utc) + timedelta(hours=12)).timestamp()),
+    }
+
+
+def send_webpush(db: Session, user: User, title: str, body: str,
+                 board_id: int | None = None) -> int:
+    """Web Push to every subscription of the user. Returns the number of
+    accepted deliveries. 404/410 responses (subscription expired, browser
+    cleared its data) are pruned on the spot so the table stays truthful.
+    Never raises: push must not break the API call that triggered it."""
+    rows = db.scalars(select(PushSubscription).where(PushSubscription.user_id == user.id)).all()
+    if not rows:
+        return 0
+    keys = _vapid_keys(db)
+    if not keys:
+        return 0
+    _, public_b64 = keys
+    from pywebpush import WebPusher  # lazy: import cost only when used
+    delivered = 0
+    stale = []
+    for sub in rows:
+        try:
+            pusher = WebPusher({
+                "endpoint": sub.endpoint,
+                "keys": {"p256dh": sub.p256dh, "auth": sub.auth},
+            })
+            resp = pusher.send(
+                data=json.dumps({"title": title, "body": body,
+                                 **({"boardId": board_id} if board_id is not None else {})}),
+                vapid_private_key=keys[0],
+                vapid_claims=_vapid_claims(db, sub.endpoint),
+                ttl=86400,
+                timeout=6,
+            )
+            if resp.status_code in (200, 201):
+                delivered += 1
+            elif resp.status_code in (404, 410):
+                stale.append(sub)
+        except Exception:
+            pass  # single subscription failing must not kill the loop
+    for row in stale:
+        db.delete(row)
+    if stale:
+        db.commit()
+    return delivered
+
+
 def _fcm_access_token() -> str | None:
     """OAuth2 access token for the FCM HTTP v1 API (cached, auto-refreshed)."""
     global _fcm_creds
@@ -660,8 +780,11 @@ def notify_task_users(db: Session, actor: User, task: Task) -> None:
         # arrives even when the app is killed) when this user has a registered
         # device; ntfy only as fallback for accounts without a device token
         # (otherwise the same tag arrived twice: once via FCM, once via ntfy).
+        # 1.14.0: the PWA (web push) is its own channel — sent in ADDITION,
+        # because its subscribers may not own the FCM-registered phone.
         if not send_fcm(db, user, message, board_id=board_id, board_name=board_name):
             send_ntfy(user, "Novi tag", message)
+        send_webpush(db, user, app_title(db), message, board_id=board_id)
 
 
 THUMB_SIZE = (420, 420)  # max thumbnail dimensions (JPEG, quality 80)
@@ -1061,6 +1184,75 @@ def test_fcm_push(db: Db, user: CurrentUser):
     return {"ok": False,
             "reason": f"Google je odbio poruku (HTTP {last_status}): {last_detail or 'bez detalja'}{hint}",
             "configured": True, "devices": len(rows) - len(stale)}
+
+
+# ------------------------------ web push (PWA) -----------------------------
+
+
+class WebPushSubscribeIn(BaseModel):
+    endpoint: str
+    keys_p256dh: str
+    keys_auth: str
+
+
+@app.get("/api/me/webpush/vapid")
+def get_vapid_public(db: Db, user: CurrentUser):
+    """Public (to logged-in users) VAPID public key for pushManager.subscribe."""
+    keys = _vapid_keys(db)
+    if not keys:
+        raise HTTPException(status_code=503, detail="Web push nije dostupan na ovom poslužitelju")
+    return {"public_key": keys[1]}
+
+
+@app.post("/api/me/webpush/subscribe")
+def webpush_subscribe(payload: WebPushSubscribeIn, db: Db, user: CurrentUser):
+    """Store a browser push subscription (called from the PWA after the
+    permission prompt). One endpoint = one row; re-subscribing updates it."""
+    endpoint = payload.endpoint.strip()
+    if not endpoint.startswith("https://"):
+        raise HTTPException(status_code=400, detail="Neispravan push endpoint")
+    if not payload.keys_p256dh or not payload.keys_auth:
+        raise HTTPException(status_code=400, detail="Nedostaju ključevi pretplate")
+    existing = db.scalar(select(PushSubscription).where(PushSubscription.endpoint == endpoint))
+    if existing:
+        existing.user_id = user.id
+        existing.p256dh = payload.keys_p256dh
+        existing.auth = payload.keys_auth
+    else:
+        db.add(PushSubscription(
+            user_id=user.id, endpoint=endpoint,
+            p256dh=payload.keys_p256dh, auth=payload.keys_auth,
+        ))
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/me/webpush/unsubscribe")
+def webpush_unsubscribe(payload: WebPushSubscribeIn, db: Db, user: CurrentUser):
+    db.execute(delete(PushSubscription).where(
+        PushSubscription.endpoint == payload.endpoint,
+        PushSubscription.user_id == user.id,
+    ))
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/me/webpush/test")
+def webpush_test(db: Db, user: CurrentUser):
+    """Send a real Web Push to ALL of this account's subscriptions — the PWA
+    equivalent of 'Testiraj Google push'. Reports exactly what happened."""
+    title = app_title(db)
+    rows = db.scalars(select(PushSubscription).where(PushSubscription.user_id == user.id)).all()
+    if not rows:
+        return {"ok": False, "devices": 0,
+                "reason": "Ovaj preglednik nije pretplaćen na web push — kliknite 'Omogući' u Obavijesti."}
+    sent = send_webpush(db, user, f"{title} test",
+                        "Ako ovo vidite, web push radi 🎉 — i radi bez ikakvog Apple računa.")
+    if sent:
+        return {"ok": True, "devices": len(rows),
+                "reason": f"Poslano na {sent} od {len(rows)} pretplata — banner stiže za par sekundi."}
+    return {"ok": False, "devices": len(rows),
+            "reason": "Push servis je odbio poruku — pretplate su vjerojatno istekle; omogućite obavijesti ponovno."}
 
 
 @app.post("/api/me/ntfy/test")

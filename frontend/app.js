@@ -59,6 +59,133 @@ const state = {
 
 const app = document.querySelector("#app");
 
+/* --------------------------- PWA plumbing (1.14.0) -------------------------
+ * The web app installs to the iPhone/Android home screen (no app store, no
+ * Apple account, nothing that expires). The service worker enables that +
+ * delivers Web Push banners; the Obavijesti page hosts the enable/test UI.
+ * -------------------------------------------------------------------------- */
+let deferredInstallPrompt = null;
+let pendingBoardFromUrl = null;
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      if (event.data && event.data.type === "open-board" && event.data.boardId) {
+        openBoard(Number(event.data.boardId));
+      }
+    });
+  });
+}
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event; // Android/desktop: offer the one-tap install
+});
+{
+  const boardParam = Number(new URLSearchParams(location.search).get("board"));
+  if (Number.isFinite(boardParam) && boardParam > 0) {
+    pendingBoardFromUrl = boardParam; // notification tap while app was closed
+    history.replaceState(null, "", location.pathname);
+  }
+}
+
+function urlB64ToUint8Array(b64) {
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+async function webPushStatus() {
+  const supported =
+    "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  if (!supported) return { supported: false, subscribed: false, permission: "unsupported" };
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    return { supported: true, subscribed: !!sub, permission: Notification.permission };
+  } catch {
+    return { supported: true, subscribed: false, permission: Notification.permission };
+  }
+}
+
+function webPushSectionHtml(wp) {
+  if (!wp.supported) {
+    return `<div class="panel" style="margin-bottom:16px;"><h2 style="margin-top:0;">Obavijesti na uređaju</h2><p class="muted" style="font-size:13px;margin:0;">Ovaj preglednik ne podržava web obavijesti.</p></div>`;
+  }
+  if (wp.permission === "denied") {
+    return `<div class="panel" style="margin-bottom:16px;"><h2 style="margin-top:0;">Obavijesti na uređaju</h2><p class="muted" style="font-size:13px;margin:0;">Obavijesti su blokirane u postavkama preglednika za ovu stranicu — otključajte ih tamo pa osvježite stranicu.</p></div>`;
+  }
+  if (wp.subscribed) {
+    return `<div class="panel" style="margin-bottom:16px;"><h2 style="margin-top:0;">Obavijesti na uređaju</h2>
+      <p class="muted" style="font-size:13px;margin:0 0 8px;">✓ Obavijesti su uključene na ovom uređaju.</p>
+      <div class="row">
+        <button class="secondary" id="webPushTest">Testiraj</button>
+        <button class="secondary" id="webPushOff">Isključi na ovom uređaju</button>
+      </div>
+      <div id="webPushMsg" class="muted" style="font-size:13px;"></div></div>`;
+  }
+  return `<div class="panel" style="margin-bottom:16px;"><h2 style="margin-top:0;">Obavijesti na uređaju</h2>
+    <div class="row"><button id="webPushOn">Omogući obavijesti</button></div>
+    <p class="muted" style="font-size:13px;">Za obavijesti i kad je aplikacija zatvorena, dodajte ju na početni ekran: <strong>Dijeli → Na početni ekran</strong> (iPhone) ili "Instaliraj" u adresnoj traci (računalo).</p>
+    <div id="webPushMsg" class="muted" style="font-size:13px;"></div></div>`;
+}
+
+async function enableWebPush(msgEl) {
+  msgEl.textContent = "Zatražujem dopuštenje…";
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      msgEl.textContent = "Dopuštenje nije odobreno — obavijesti ostaju isključene.";
+      return;
+    }
+    msgEl.textContent = "Pretplaćujem…";
+    const reg = await navigator.serviceWorker.ready;
+    const { public_key } = await api.json("/api/me/webpush/vapid", "GET");
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlB64ToUint8Array(public_key),
+    });
+    const j = sub.toJSON();
+    await api.json("/api/me/webpush/subscribe", "POST", {
+      endpoint: j.endpoint,
+      keys_p256dh: j.keys.p256dh,
+      keys_auth: j.keys.auth,
+    });
+    msgEl.textContent = "✓ Obavijesti su omogućene — stigao je i probni banner ako ih je server poslao.";
+    await renderNotifications();
+  } catch (error) {
+    msgEl.textContent = `✗ ${error.message}`;
+  }
+}
+
+async function disableWebPush(msgEl) {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      const j = sub.toJSON();
+      try {
+        await api.json("/api/me/webpush/unsubscribe", "POST", { endpoint: j.endpoint, keys_p256dh: "", keys_auth: "" });
+      } catch { /* server row may already be gone */ }
+      await sub.unsubscribe();
+    }
+    msgEl.textContent = "Obavijesti su isključene na ovom uređaju.";
+    await renderNotifications();
+  } catch (error) {
+    msgEl.textContent = `✗ ${error.message}`;
+  }
+}
+
+async function testWebPush(msgEl) {
+  msgEl.textContent = "Slanje…";
+  try {
+    const res = await api.json("/api/me/webpush/test", "POST", {});
+    msgEl.textContent = res.ok ? `✓ ${res.reason}` : `⚠ ${res.reason}`;
+  } catch (error) {
+    msgEl.textContent = `✗ ${error.message}`;
+  }
+}
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
     "&": "&amp;",
@@ -134,6 +261,12 @@ async function boot() {
     renderApp();
     refreshUnreadCount();
     setInterval(refreshUnreadCount, 30000); // badge stays fresh even idle
+    // 1.14.0: notification tap while the PWA was closed deep-links to the board.
+    if (pendingBoardFromUrl) {
+      const boardId = pendingBoardFromUrl;
+      pendingBoardFromUrl = null;
+      openBoard(boardId);
+    }
   } catch {
     localStorage.removeItem("token");
     api.token = "";
@@ -1517,6 +1650,18 @@ async function renderNotifications() {
     ${state.notifications.length ? `<div class="row" style="justify-content:flex-end;"><button class="secondary" id="markAllRead" ${unread ? "" : "disabled"}>Označi sve kao pročitano${unread ? ` (${unread})` : ""}</button></div>` : ""}
     ${rows || '<div class="muted">Nema obavijesti.</div>'}
   </div>`;
+
+  // 1.14.0: device (web) push — status + enable/test/disable right in Obavijesti.
+  try {
+    const wp = await webPushStatus();
+    const host = document.createElement("div");
+    host.innerHTML = webPushSectionHtml(wp);
+    view.prepend(host);
+    const msgEl = host.querySelector("#webPushMsg");
+    host.querySelector("#webPushOn")?.addEventListener("click", () => enableWebPush(msgEl));
+    host.querySelector("#webPushOff")?.addEventListener("click", () => disableWebPush(msgEl));
+    host.querySelector("#webPushTest")?.addEventListener("click", () => testWebPush(msgEl));
+  } catch { /* push UI is best-effort */ }
 
   view.querySelectorAll(".notification.clickable").forEach((el) => {
     el.onclick = async (event) => {

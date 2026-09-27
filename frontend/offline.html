@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="hr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>My Team — offline</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #070c20;
+        color: #e8ecff;
+        font-family: system-ui, sans-serif;
+        text-align: center;
+        padding: 24px;
+      }
+      main { max-width: 420px; }
+      h1 { font-size: 20px; }
+      p { color: #9aa6d0; line-height: 1.5; }
+      button {
+        margin-top: 16px;
+        padding: 10px 22px;
+        border: 0;
+        border-radius: 999px;
+        background: #7c5cff;
+        color: white;
+        font-size: 15px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Nema veze s poslužiteljem</h1>
+      <p>
+        Aplikacija nije dostupna dok nema interneta (ili dok poslužitelj ne radi).
+        Pokušajte ponovno kad se veza vrati.
+      </p>
+      <button onclick="location.reload()">Pokušaj ponovno</button>
+    </main>
+  </body>
+</html>

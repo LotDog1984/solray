@@ -43,6 +43,8 @@ logs/
 # ...except the launcher-icon source artwork (processed + committed on purpose;
 # CI regenerates all mipmap sizes from it via flutter_launcher_icons)
 !mobile/assets/icon/*.png
+# ...and the PWA icons (1.14.0) served by the frontend (installable web app)
+!frontend/icons/*.png
 debug-*.js
 final-*.js
 manual-browser-test.js
