@@ -41,6 +41,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   WebSocketChannel? _socket;
   int _socketRetry = 0;
   Timer? _reconnect;
+  final List<void Function()> _syncCancels = [];
   int _unread = 0;
   int _tab = 0; // 0 Projekti, 1 Pretraga, 2 Datoteke, 3 Obavijesti, 4 Nabava
   Timer? _unreadPoll;
@@ -258,31 +259,31 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   /// also ticks every 20 s while its socket is down (slow-poll fallback).
   void _connectSync() {
     final bus = SyncBus.forApi(widget.api); // shared per-server singleton
-    bus.listen('projects', (_) {
+    _syncCancels.add(bus.listen('projects', (_) {
       if (!mounted) return;
       if (_tab == 0) _refresh(silent: true);
       if (_tab == 4) setState(() => _projectsTick++); // Nabava tab: reload via its own listener
-    });
-    bus.listen('nabava', (_) {
+    }));
+    _syncCancels.add(bus.listen('nabava', (_) {
       if (!mounted || _tab != 4) return;
       setState(() => _projectsTick++); // rebuild → NabavaTab refetches in didUpdateWidget
-    });
+    }));
     // 1.12.4: tag pushes no longer travel over ntfy for FCM-registered
     // devices (exactly one channel per user), so the Obavijesti badge can no
     // longer rely on the ntfy WebSocket arriving first — refresh it whenever
     // the sync bus reports a board change (a new mention changes the count).
-    bus.listen('board', (_) {
+    _syncCancels.add(bus.listen('board', (_) {
       if (!mounted) return;
       _refreshUnread();
-    });
+    }));
     // 1.10.2: listen to the 20 s fallback tick (fires while the sync socket
     // is down) — this is what was missing: with the socket asleep the
     // Projects tab never refreshed without a manual pull.
-    bus.listen('tick', (_) {
+    _syncCancels.add(bus.listen('tick', (_) {
       if (!mounted) return;
       if (_tab == 0) _refresh(silent: true);
       if (_tab == 4) setState(() => _projectsTick++); // Nabava refetches via its signal
-    });
+    }));
     // files events are handled inside FilesScreen (pushed route)
   }
 
@@ -299,6 +300,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _unreadPoll?.cancel();
+    for (final cancel in _syncCancels) {
+      cancel();
+    }
     SyncBus.drop(widget.api.baseUrl); // leaving the app's main screen (logout/server change)
     _reconnect?.cancel();
     _socket?.sink.close();
@@ -343,7 +347,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final titles = [s.appName, 'Pretraga', 'Datoteke', 'Obavijesti', todoName];
 
     return Scaffold(
-      backgroundColor: SR.bg,
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         title: Text(titles[_tab]),
         actions: [
@@ -368,8 +372,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               child: screens[_tab],
             ),
       bottomNavigationBar: NavigationBar(
+        elevation: 0,
         backgroundColor: SR.sidebar,
-        indicatorColor: SR.accentDark,
+        indicatorColor: SR.accent.withAlpha(90),
         selectedIndex: _tab,
         // 1.10.2: opening a tab always shows fresh data — Projekti reloads
         // silently (fixes "stale after some time"), Nabava remounts and

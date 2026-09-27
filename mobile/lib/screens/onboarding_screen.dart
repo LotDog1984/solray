@@ -47,7 +47,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: SR.sidebar,
+      backgroundColor: Colors.transparent,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -55,7 +55,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Spacer(),
-              const Icon(Icons.view_kanban_outlined, color: SR.accent, size: 64),
+              Align(
+                alignment: Alignment.center,
+                child: Container(
+                  width: 78,
+                  height: 78,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(26),
+                    gradient: const LinearGradient(colors: [SR.accent, SR.cyan]),
+                    boxShadow: const [BoxShadow(color: Color(0x668B7BFF), blurRadius: 28, offset: Offset(0, 12))],
+                  ),
+                  child: const Icon(Icons.view_kanban_outlined, color: Color(0xFF0B0D1C), size: 40),
+                ),
+              ),
               const SizedBox(height: 12),
               const Text('My Team', textAlign: TextAlign.center, style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
               const SizedBox(height: 8),

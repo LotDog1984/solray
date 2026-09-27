@@ -220,6 +220,7 @@ async function renderAuth(message = "") {
 function renderApp() {
   app.innerHTML = `
     <div class="shell">
+      <nav class="icon-rail" id="iconRail" aria-label="Glavna navigacija"></nav>
       <aside class="sidebar" id="sidebar"></aside>
       <section class="content" id="content"></section>
     </div>
@@ -282,6 +283,17 @@ function goNabava() {
   renderNabava();
 }
 
+function goNotifications() {
+  state.layer = "projects";
+  state.project = null;
+  state.board = null;
+  state.view = "notifications";
+  state.searchResults = null;
+  renderSidebar();
+  renderView();
+  renderNotifications();
+}
+
 function goBoards(projectId) {
   state.project = projectId;
   state.layer = "boards";
@@ -304,6 +316,122 @@ function openBoard(boardId) {
   loadBoard();
 }
 
+function countValue(value, fallback = 0) {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : fallback;
+}
+
+function projectSummary(project) {
+  const boards = Array.isArray(project?.boards) ? project.boards : [];
+  const taskCount = countValue(project?.task_count, boards.reduce((sum, board) => sum + countValue(board.task_count), 0));
+  const openTaskCount = countValue(project?.open_task_count, boards.reduce((sum, board) => sum + countValue(board.open_task_count, countValue(board.task_count)), 0));
+  const completedTaskCount = countValue(project?.completed_task_count, Math.max(0, taskCount - openTaskCount));
+  return {
+    boards,
+    boardCount: countValue(project?.board_count, boards.length),
+    taskCount,
+    openTaskCount,
+    completedTaskCount,
+    progress: taskCount ? Math.round((completedTaskCount / taskCount) * 100) : 0,
+  };
+}
+
+function boardSummary(board) {
+  const total = countValue(board?.task_count);
+  const completed = countValue(
+    board?.completed_task_count,
+    Math.max(0, total - countValue(board?.open_task_count, total)),
+  );
+  const open = countValue(board?.open_task_count, Math.max(0, total - completed));
+  return { total, open, completed, progress: total ? Math.round((completed / total) * 100) : 0 };
+}
+
+function syncBoardSummary(board) {
+  const project = state.projects.find((entry) => entry.id === state.project) || currentProject();
+  if (!project) return;
+  const byColumn = board.columns || [];
+  const total = byColumn.reduce((sum, column) => sum + (column.tasks || []).length, 0);
+  const completed = byColumn.reduce((sum, column) => sum + (column.tasks || []).filter((task) => task.completed).length, 0);
+  const boardExists = (project.boards || []).some((entry) => entry.id === board.id);
+  const updatedBoards = boardExists
+    ? project.boards.map((entry) => entry.id === board.id
+      ? { ...entry, task_count: total, completed_task_count: completed, open_task_count: total - completed }
+      : entry)
+    : project.boards || [];
+  project.boards = updatedBoards;
+  project.board_count = updatedBoards.length;
+  project.task_count = updatedBoards.reduce((sum, entry) => sum + countValue(entry.task_count), 0);
+  project.completed_task_count = updatedBoards.reduce((sum, entry) => sum + countValue(entry.completed_task_count), 0);
+  project.open_task_count = Math.max(0, project.task_count - project.completed_task_count);
+}
+
+function updateBoardHeader(board) {
+  const summary = boardSummary({
+    task_count: (board.columns || []).reduce((sum, column) => sum + (column.tasks || []).length, 0),
+    completed_task_count: (board.columns || []).reduce((sum, column) => sum + (column.tasks || []).filter((task) => task.completed).length, 0),
+  });
+  const openEl = document.querySelector("#boardOpenCount");
+  const totalEl = document.querySelector("#boardTotalCount");
+  const progressEl = document.querySelector("#boardProgressCount");
+  if (openEl) openEl.textContent = `${summary.open} otvoreno`;
+  if (totalEl) totalEl.textContent = `${summary.total} zadataka`;
+  if (progressEl) progressEl.textContent = `${summary.progress}% gotovo`;
+}
+
+function renderIconRail() {
+  const rail = document.querySelector("#iconRail");
+  if (!rail) return;
+  const active = (action) => {
+    if (action === "projects") return state.view === "kanban";
+    if (action === "files") return state.view === "files";
+    if (action === "notifications" || action === "nabava" || action === "settings") return state.view === action;
+    return false;
+  };
+  const badge = state.unreadCount
+    ? `<span class="rail-badge">${state.unreadCount > 99 ? "99+" : state.unreadCount}</span>`
+    : "";
+  const userName = state.me?.display_name || state.me?.username || "My Team";
+  const initials = userName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+  rail.innerHTML = `
+    <div class="rail-mark" title="${escapeHtml(state.appName || "My Team")}">M<span>✦</span></div>
+    <button class="rail-button ${active("projects") ? "active" : ""}" data-rail-action="projects" title="Projekti" aria-label="Projekti"><span>▦</span></button>
+    <button class="rail-button ${active("nabava") ? "active" : ""}" data-rail-action="nabava" title="${escapeHtml(state.defaultTodoListName || "Nabava")}" aria-label="Nabava"><span>🛒</span></button>
+    <button class="rail-button ${active("files") ? "active" : ""}" data-rail-action="files" title="Datoteke" aria-label="Datoteke"><span>🗂</span></button>
+    <button class="rail-button ${active("notifications") ? "active" : ""}" data-rail-action="notifications" title="Obavijesti" aria-label="Obavijesti"><span>🔔</span>${badge}</button>
+    <span class="rail-spacer"></span>
+    <button class="rail-button" data-rail-action="search" title="Pretraga" aria-label="Pretraga"><span>⌕</span></button>
+    <button class="rail-button ${active("settings") ? "active" : ""}" data-rail-action="settings" title="Postavke" aria-label="Postavke"><span>⚙</span></button>
+    <button class="rail-avatar" data-rail-action="logout" title="Odjava · ${escapeHtml(userName)}" aria-label="Odjava">${escapeHtml(initials || "MT")}</button>
+  `;
+  rail.querySelectorAll("[data-rail-action]").forEach((button) => {
+    button.onclick = () => {
+      const action = button.dataset.railAction;
+      if (action === "projects") return goProjects();
+      if (action === "nabava") return goNabava();
+      if (action === "notifications") return goNotifications();
+      if (action === "search") return document.querySelector("#searchInput")?.focus();
+      if (action === "settings") {
+        state.layer = "app";
+        state.view = "settings";
+        renderSidebar();
+        renderView();
+        return;
+      }
+      if (action === "files") {
+        if (!state.project) state.project = state.projects[0]?.id || null;
+        if (!state.project) return;
+        state.layer = "app";
+        state.board = null;
+        state.view = "files";
+        renderSidebar();
+        renderView();
+        return;
+      }
+      if (action === "logout") logout();
+    };
+  });
+}
+
 function renderSidebar() {
   const sidebar = document.querySelector("#sidebar");
   if (!sidebar) return;
@@ -311,72 +439,79 @@ function renderSidebar() {
   let layerHtml = "";
   if (state.layer === "projects") {
     const rows = state.projects
-      .map(
-        (project) => `
-        <div class="side-item">
-          <div class="side-row">
-            <button class="side-name" data-open-project="${project.id}">${escapeHtml(project.name)}</button>
-            <button class="icon-action edit-toggle" title="Uredi projekt">✎</button>
+      .map((project) => {
+        const summary = projectSummary(project);
+        return `
+        <div class="side-item project-side-item">
+          <div class="project-side-card ${state.project === project.id ? "active" : ""}">
+            <button class="project-nav" data-open-project="${project.id}" aria-label="Otvori projekt ${escapeHtml(project.name)}">
+              <span class="project-nav-title">${escapeHtml(project.name)}</span>
+              <span class="project-nav-meta">${summary.boardCount} ploče <i>·</i> ${summary.openTaskCount}/${summary.taskCount} zadataka</span>
+            </button>
+            <span class="project-progress-ring" style="--progress:${summary.progress}%" title="${summary.progress}% zadataka gotovo"><b>${summary.progress}</b></span>
+            <button class="icon-action edit-toggle" title="Uredi projekt" aria-label="Uredi projekt">···</button>
           </div>
+          <div class="project-progress-track"><span style="width:${summary.progress}%"></span></div>
           <div class="edit-menu" hidden>
             <button class="menu-rename" data-project-id="${project.id}">Preimenuj</button>
             <button class="menu-delete danger" data-project-id="${project.id}">Obriši</button>
           </div>
-        </div>`
-      )
+        </div>`;
+      })
       .join("");
     layerHtml = `
-      <div class="side-label">Projekti</div>
-      <div class="side-list">${rows || '<div class="side-empty">Nema projekata</div>'}</div>
+      <div class="side-section-head"><div class="side-label">Projekti</div><span class="section-count">${state.projects.length}</span></div>
+      <div class="side-list project-list">${rows || '<div class="side-empty">Nema projekata</div>'}</div>
       <form id="newProjectForm" class="side-form">
         <input name="name" placeholder="Novi projekt..." required />
-        <button type="submit" title="Dodaj projekt">+</button>
-      </form>
-      <button class="secondary notif-btn ${state.view === "notifications" ? "active" : ""}" id="navNotifications">Obavijesti${state.unreadCount ? `<span class="badge">${state.unreadCount > 99 ? "99+" : state.unreadCount}</span>` : ""}</button>
-      <button class="secondary notif-btn ${state.view === "nabava" ? "active" : ""}" id="navNabava">${escapeHtml(state.defaultTodoListName || "Nabava")}</button>`;
+        <button type="submit" title="Dodaj projekt" aria-label="Dodaj projekt">+</button>
+      </form>`;
   } else {
     const project = currentProject();
     const rows = (project?.boards || [])
-      .map(
-        (board) => `
-        <div class="side-item">
-          <div class="side-row">
+      .map((board) => {
+        const summary = boardSummary(board);
+        return `
+        <div class="side-item board-side-item">
+          <div class="side-row board-side-row">
             <button class="side-name ${state.board === board.id ? "active" : ""}" data-open-board="${board.id}">${escapeHtml(board.name)}</button>
-            <button class="icon-action edit-toggle" title="Uredi ploču">✎</button>
+            <span class="board-count-pill" title="${summary.open} otvoreno od ${summary.total} zadataka" aria-label="${summary.open} otvoreno od ${summary.total} zadataka">${summary.open}/${summary.total}</span>
+            <button class="icon-action edit-toggle" title="Uredi ploču" aria-label="Uredi ploču">···</button>
           </div>
           <div class="edit-menu" hidden>
             <button class="menu-rename" data-board-id="${board.id}">Preimenuj</button>
             <button class="menu-delete danger" data-board-id="${board.id}">Obriši</button>
           </div>
-        </div>`
-      )
+        </div>`;
+      })
       .join("");
+    const summary = projectSummary(project);
     layerHtml = `
-      <button class="side-back" id="sideBackToProjects">← Projekti</button>
-      <div class="side-label">${escapeHtml(project?.name || "Ploče")}</div>
-      <div class="side-list">${rows || '<div class="side-empty">Nema ploča</div>'}</div>
+      <button class="side-back" id="sideBackToProjects"><span>←</span> Projekti</button>
+      <div class="side-section-head"><div class="side-label">${escapeHtml(project?.name || "Ploče")}</div><span class="section-count">${summary.boardCount}</span></div>
+      <div class="project-context-meta">${summary.openTaskCount} otvoreno <i>·</i> ${summary.taskCount} zadataka</div>
+      <div class="side-list board-list">${rows || '<div class="side-empty">Nema ploča</div>'}</div>
       ${project ? `
       <form id="newBoardForm" class="side-form">
         <input name="name" placeholder="Nova ploča..." required />
-        <button type="submit" title="Dodaj ploču">+</button>
+        <button type="submit" title="Dodaj ploču" aria-label="Dodaj ploču">+</button>
       </form>` : ""}`;
   }
 
+  const userName = state.me?.display_name || state.me?.username || "";
   sidebar.innerHTML = `
     <div class="brand-row">
-      <div class="brand">${escapeHtml(state.appName || "Private Workspace")}</div>
+      <div class="brand">${escapeHtml(state.appName || "My Team")}</div>
       <div id="versionBadge" class="version-badge" title="Verzija aplikacije"></div>
     </div>
-    <div style="color:#94a3b8;font-size:13px;">Prijavljen: ${escapeHtml(state.me?.display_name || state.me?.username || "")}</div>
+    <div class="account-line"><span class="account-avatar">${escapeHtml(userName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "MT")}</span><span>Prijavljen: <b>${escapeHtml(userName)}</b></span></div>
     <form id="sideSearchForm" class="side-search">
       <input id="searchInput" type="search" placeholder="Traži projekte, ploče, zadatke, nabavu…" value="${escapeHtml(state.searchQuery || "")}" autocomplete="off" />
     </form>
     <div class="side-layer">${layerHtml}</div>
-    <div style="display:grid;gap:8px;">
-      <button class="secondary" id="navSettings">Postavke</button>
-      <button class="danger" id="logoutBtn">Odjava</button>
-    </div>
+    <div class="sidebar-foot"><span class="online-dot"></span> Zajednički prostor <span class="foot-version">v<span id="sideVersionText">—</span></span></div>
   `;
+  renderIconRail();
   bindSearchInput(sidebar);
   bindSidebarEvents(sidebar);
 }
@@ -390,7 +525,9 @@ function bindSidebarEvents(sidebar) {
     .then((r) => (r.ok ? r.text() : null))
     .then((v) => {
       const el = document.querySelector("#versionBadge");
+      const footVersion = document.querySelector("#sideVersionText");
       if (el && v) el.textContent = `v${v.trim()}`;
+      if (footVersion && v) footVersion.textContent = v.trim();
     })
     .catch(() => {});
 
@@ -482,17 +619,7 @@ function bindSidebarEvents(sidebar) {
   const nabavaBtn = sidebar.querySelector("#navNabava");
   if (nabavaBtn) nabavaBtn.onclick = () => goNabava();
 
-  const settingsBtn = sidebar.querySelector("#navSettings");
-  if (settingsBtn) {
-    settingsBtn.onclick = () => {
-      state.layer = "app";
-      state.view = "settings";
-      renderView();
-    };
-  }
-
-  const logoutBtn = sidebar.querySelector("#logoutBtn");
-  if (logoutBtn) logoutBtn.onclick = () => logout();
+  // Settings and logout live in the persistent icon rail now.
 }
 
 function closeMenus(root) {
@@ -592,15 +719,28 @@ function renderView() {
     return;
   }
 
-  const heading = board?.name || state.appName || "Private Workspace";
-  // Board tabs: only Ploča and Datoteke (Postavke lives in the left bar,
-  // Obavijesti on the main page).
+  const heading = board?.name || state.appName || "My Team";
+  const project = currentProject();
+  const summary = board ? boardSummary(board) : null;
+  const boardTaskCount = summary?.total ?? 0;
+  const boardOpenCount = summary?.open ?? 0;
+  const team = state.users.slice(0, 4);
+  // Board tabs: only Ploča and Datoteke (Postavke is on the icon rail,
+  // Obavijesti and Nabava are main views).
   const tabs = `
+    ${board ? `<div class="board-breadcrumb">Projekti <span>/</span> ${escapeHtml(project?.name || "Projekt")} <span>/</span> <b>${escapeHtml(board.name)}</b></div>` : ""}
     <div class="topbar">
-      <h1>${escapeHtml(heading)}</h1>
-      <div class="tabs">
-        <button class="${state.view === "kanban" ? "active" : ""}" data-view="kanban">Ploča</button>
-        <button class="${state.view === "files" ? "active" : ""}" data-view="files">Datoteke</button>
+      <div class="board-heading">
+        <h1>${escapeHtml(heading)}</h1>
+        ${board ? `      <div class="board-subtitle"><span id="boardOpenCount">${boardOpenCount} otvoreno</span><i>·</i><span id="boardTotalCount">${boardTaskCount} zadataka</span><i>·</i><span id="boardProgressCount">${summary.progress}% gotovo</span></div>` : ""}
+      </div>
+      ${board ? `<div class="team-stack" aria-label="Članovi tima">${team.map((user, index) => `<span class="team-avatar avatar-${index + 1}" title="${escapeHtml(user.display_name || user.username)}">${escapeHtml((user.display_name || user.username || "?").split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span>`).join("")}${state.users.length > team.length ? `<span class="team-more">+${state.users.length - team.length}</span>` : ""}</div>` : ""}
+      <div class="topbar-actions">
+        ${board && state.view === "kanban" ? `<button class="primary" id="quickAddTask">＋ Novi zadatak</button>` : ""}
+        <div class="tabs">
+          <button class="${state.view === "kanban" ? "active" : ""}" data-view="kanban">Ploča</button>
+          <button class="${state.view === "files" ? "active" : ""}" data-view="files">Datoteke</button>
+        </div>
       </div>
     </div>
   `;
@@ -709,6 +849,14 @@ function bindTabs(container) {
       renderView();
     };
   });
+  const quickAdd = container.querySelector("#quickAddTask");
+  if (quickAdd) {
+    quickAdd.onclick = () => {
+      const input = document.querySelector(".new-task-form input[name='title']");
+      input?.scrollIntoView({ behavior: "smooth", block: "center" });
+      input?.focus({ preventScroll: true });
+    };
+  }
 }
 
 /* ---------------------------------- kanban -------------------------------- */
@@ -723,8 +871,11 @@ async function loadBoard() {
   try {
     const board = await api.json(`/api/boards/${state.board}`, "GET");
     state.lastBoard = board;
+    syncBoardSummary(board);
+    updateBoardHeader(board);
     renderKanban(board);
     bindTaskEvents(board);
+    if (state.layer === "app") renderSidebar();
   } catch (error) {
     kanban.innerHTML = `<div class="panel">${escapeHtml(error.message)}</div>`;
   }
@@ -736,31 +887,27 @@ function renderKanban(board) {
   state.board = board.id;
 
   const columnsHtml = board.columns
-    .map((col) => {
+    .map((col, index) => {
       const tasks = col.tasks.map((task) => renderTask(task)).join("");
+      const openCount = col.tasks.filter((task) => !task.completed).length;
       return `
-      <div class="column" data-column-id="${col.id}">
-        <h2>${escapeHtml(col.name)} <small style="color:var(--muted);">(${col.tasks.length})</small></h2>
+      <div class="column" data-column-id="${col.id}" style="--column-index:${index}">
+        <h2><span class="column-dot"></span>${escapeHtml(col.name)} <small class="column-count" title="${openCount} otvoreno · ${col.tasks.length} ukupno">${openCount}</small><button type="button" class="column-add add-task-shortcut" title="Dodaj zadatak" aria-label="Dodaj zadatak">＋</button></h2>
         <div class="tasks" data-tasks-for="${col.id}">${tasks}</div>
-        <form class="new-task-form" data-column-id="${col.id}" style="margin-top:10px;display:grid;gap:6px;">
-          <input name="title" placeholder="Novi zadatak..." required />
-          <textarea name="description" placeholder="Opis (@ime za tagiranje)..." style="min-height:50px;"></textarea>
-          <div class="todo-creator">
-            <div class="todo-creator-rows"></div>
-            <button type="button" class="secondary add-todo-row">+ Stavka popisa</button>
-          </div>
-          <div class="row">
-            <select name="assignee_id" style="flex:2;">
+        <form class="new-task-form" data-column-id="${col.id}">
+          <div class="quick-task-row"><input name="title" placeholder="Novi zadatak..." required /><button type="submit" class="primary" title="Dodaj zadatak">＋</button></div>
+          <details class="task-extra-details">
+            <summary>Opis, popis i dodjela</summary>
+            <textarea name="description" placeholder="Opis (@ime za tagiranje)..."></textarea>
+            <div class="todo-creator">
+              <div class="todo-creator-rows"></div>
+              <button type="button" class="secondary add-todo-row">+ Stavka popisa</button>
+            </div>
+            <select name="assignee_id">
               <option value="">Nedodijeljeno</option>
-              ${state.users
-                .map(
-                  (u) =>
-                    `<option value="${u.id}">${escapeHtml(u.display_name || u.username)}</option>`
-                )
-                .join("")}
+              ${state.users.map((u) => `<option value="${u.id}">${escapeHtml(u.display_name || u.username)}</option>`).join("")}
             </select>
-            <button type="submit" style="flex:1;">Dodaj</button>
-          </div>
+          </details>
         </form>
       </div>`;
     })
@@ -770,8 +917,8 @@ function renderKanban(board) {
   // into the global Nabava view (every Stavka shows its project + board there).
   const todoEntries = board.todo_list?.entries || [];
   const todoPanel = `
-    <div class="column todo-panel" id="boardTodoPanel" data-board-id="${board.id}">
-      <h2>✅ ${escapeHtml(state.defaultTodoListName || "Nabava")} <small style="color:var(--muted);">(${todoEntries.length})</small></h2>
+    <div class="column todo-panel" id="boardTodoPanel" data-board-id="${board.id}" style="--column-index:${board.columns.length}">
+      <h2><span class="column-dot"></span>${escapeHtml(state.defaultTodoListName || "Nabava")} <small class="column-count" title="${todoEntries.filter((entry) => !entry.is_done).length} otvoreno · ${todoEntries.length} ukupno">${todoEntries.filter((entry) => !entry.is_done).length}</small></h2>
       <div class="tasks" id="boardTodoEntries">${renderTodoEntries(todoEntries)}</div>
       <form id="boardTodoForm" style="margin-top:10px;display:grid;gap:6px;">
         <input name="title" placeholder="Nova stavka (npr. nema više vijaka 6x60)..." required />
@@ -783,14 +930,19 @@ function renderKanban(board) {
     columnsHtml +
     todoPanel +
     `
-    <div class="column" style="background:transparent;border-style:dashed;">
-      <form id="newColumnForm" style="display:grid;gap:8px;">
+    <div class="column new-column-tile" style="--column-index:${board.columns.length + 1}">
+      <form id="newColumnForm">
         <input name="name" placeholder="Nova kolona..." required />
-        <button type="submit" class="secondary">Dodaj kolonu</button>
+        <button type="submit" class="secondary">＋ Dodaj kolonu</button>
       </form>
     </div>`;
 
   bindBoardTodoEvents(board);
+
+  // The global and per-column + buttons focus the nearest quick task field.
+  kanban.querySelectorAll(".add-task-shortcut").forEach((button) => {
+    button.onclick = () => button.closest(".column")?.querySelector(".new-task-form input[name='title']")?.focus();
+  });
 
   // Bind new task forms
   kanban.querySelectorAll(".new-task-form").forEach((form) => {

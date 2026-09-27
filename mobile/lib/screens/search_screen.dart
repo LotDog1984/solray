@@ -87,7 +87,7 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: SR.bg,
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         titleSpacing: 0,
         title: TextField(
@@ -150,6 +150,7 @@ class BoardSearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
     final theme = Theme.of(context);
     return theme.copyWith(
       appBarTheme: theme.appBarTheme.copyWith(backgroundColor: SR.sidebar),
+      scaffoldBackgroundColor: SR.bg,
       inputDecorationTheme: const InputDecorationTheme(
         hintStyle: TextStyle(color: SR.muted),
         border: InputBorder.none,

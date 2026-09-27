@@ -164,8 +164,25 @@ class _BoardsScreenState extends State<BoardsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: SR.bg,
-      appBar: AppBar(title: Text(widget.projectName)),
+      backgroundColor: Colors.transparent,
+      appBar: AppBar(
+        title: Text(widget.projectName),
+        bottom: _boards.isEmpty
+            ? null
+            : PreferredSize(
+                preferredSize: const Size.fromHeight(28),
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 20, right: 16, bottom: 10),
+                  child: Row(
+                    children: [
+                      Expanded(child: Text('${_boards.length} ploče', style: const TextStyle(color: SR.muted, fontSize: 11))),
+                      Text('${_boards.fold<int>(0, (sum, board) => sum + ((board['open_task_count'] as num?)?.toInt() ?? (board['task_count'] as num?)?.toInt() ?? 0))} otvoreno',
+                          style: const TextStyle(color: SR.muted, fontSize: 11)),
+                    ],
+                  ),
+                ),
+              ),
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
@@ -184,29 +201,84 @@ class _BoardsScreenState extends State<BoardsScreen> {
                     )
                   else ...[
                     for (final b in _boards)
-                      Card(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        child: ListTile(
-                          leading: const Icon(Icons.view_kanban_outlined, color: SR.accent),
-                          title: Text(b['name'] as String? ?? '', style: const TextStyle(fontWeight: FontWeight.w600)),
-                          trailing: IconButton(
-                            tooltip: 'Uredi',
-                            icon: const Icon(Icons.edit_outlined, size: 20, color: SR.muted),
-                            onPressed: () => _editBoard(b),
-                          ),
-                          onTap: () async {
-                            await Navigator.of(context).push(MaterialPageRoute(
-                              builder: (_) => BoardScreen(
-                                api: widget.api,
-                                boardId: b['id'] as int,
-                                boardName: b['name'] as String? ?? '',
-                                projects: _allProjects,
+                      Builder(builder: (context) {
+                        final total = (b['task_count'] as num?)?.toInt() ?? 0;
+                        final open = (b['open_task_count'] as num?)?.toInt() ?? total;
+                        final completed = (b['completed_task_count'] as num?)?.toInt() ?? (total - open).clamp(0, total);
+                        final progress = total == 0 ? 0 : ((completed / total) * 100).round();
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          clipBehavior: Clip.antiAlias,
+                          child: Container(
+                            decoration: const BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [Color(0x1FFFFFFF), Color(0x0AFFFFFF)],
                               ),
-                            ));
-                            await _load();
-                          },
-                        ),
-                      ),
+                            ),
+                            child: Column(
+                              children: [
+                                ListTile(
+                                  contentPadding: const EdgeInsets.fromLTRB(14, 5, 8, 2),
+                                  leading: Container(
+                                    width: 42,
+                                    height: 42,
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(14),
+                                      gradient: LinearGradient(colors: [SR.accent.withAlpha(70), SR.cyan.withAlpha(50)]),
+                                      border: Border.all(color: SR.line),
+                                    ),
+                                    child: const Icon(Icons.view_kanban_outlined, color: SR.cyan, size: 21),
+                                  ),
+                                  title: Text(b['name'] as String? ?? '', maxLines: 1, overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontWeight: FontWeight.w700)),
+                                  subtitle: Padding(
+                                    padding: const EdgeInsets.only(top: 5),
+                                    child: Text('$open otvoreno  ·  $total zadataka',
+                                        style: const TextStyle(color: SR.muted, fontSize: 11)),
+                                  ),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      SRProgressRing(progress: total == 0 ? 0 : completed / total, label: '$progress%', size: 42),
+                                      const SizedBox(width: 4),
+                                      IconButton(
+                                        tooltip: 'Uredi',
+                                        icon: const Icon(Icons.more_horiz, size: 21, color: SR.muted),
+                                        onPressed: () => _editBoard(b),
+                                      ),
+                                    ],
+                                  ),
+                                  onTap: () async {
+                                    await Navigator.of(context).push(MaterialPageRoute(
+                                      builder: (_) => BoardScreen(
+                                        api: widget.api,
+                                        boardId: b['id'] as int,
+                                        boardName: b['name'] as String? ?? '',
+                                        projects: _allProjects,
+                                      ),
+                                    ));
+                                    await _load();
+                                  },
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 13),
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(99),
+                                    child: LinearProgressIndicator(
+                                      value: total == 0 ? 0 : completed / total,
+                                      minHeight: 4,
+                                      backgroundColor: SR.line,
+                                      valueColor: const AlwaysStoppedAnimation<Color>(SR.cyan),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }),
                     if (_boards.isEmpty)
                       const Center(
                         child: Padding(

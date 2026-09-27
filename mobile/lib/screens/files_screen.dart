@@ -244,7 +244,7 @@ class _FilesScreenState extends State<FilesScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: SR.bg,
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         title: Text('Datoteke · ${widget.projectName}'),
         actions: [

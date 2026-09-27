@@ -28,6 +28,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    case,
     create_engine, 
     delete,
     select, 
@@ -1095,17 +1096,49 @@ def ensure_project_manage(db: Session, user: User, project: Project) -> None:
 
 @app.get("/api/projects")
 def list_projects(db: Db, user: CurrentUser):
-    """Shared workspace: all projects and all boards are visible to every user."""
+    """Shared workspace: projects, boards, and additive workload counts."""
     board_rows = db.scalars(select(Board).order_by(Board.created_at)).all()
     projects = db.scalars(select(Project).order_by(Project.created_at)).all()
+    counts = db.execute(
+        select(
+            BoardColumn.board_id,
+            func.count(Task.id).label("task_count"),
+            func.coalesce(func.sum(case((Task.completed.is_(False), 1), else_=0)), 0).label("open_task_count"),
+            func.coalesce(func.sum(case((Task.completed.is_(True), 1), else_=0)), 0).label("completed_task_count"),
+        )
+        .select_from(BoardColumn)
+        .outerjoin(Task, Task.column_id == BoardColumn.id)
+        .group_by(BoardColumn.board_id)
+    ).all()
+    task_counts = {
+        board_id: (int(total), int(open_count), int(completed_count))
+        for board_id, total, open_count, completed_count in counts
+    }
+
+    boards_by_project: dict[int, list[dict]] = {project.id: [] for project in projects}
+    for board in board_rows:
+        total, open_count, completed_count = task_counts.get(board.id, (0, 0, 0))
+        boards_by_project.setdefault(board.project_id, []).append({
+            "id": board.id,
+            "name": board.name,
+            "project_id": board.project_id,
+            "task_count": total,
+            "open_task_count": open_count,
+            "completed_task_count": completed_count,
+        })
+
     out = []
     for project in projects:
-        boards = [
-            {"id": b.id, "name": b.name, "project_id": b.project_id}
-            for b in board_rows
-            if b.project_id == project.id
-        ]
-        out.append({"id": project.id, "name": project.name, "boards": boards})
+        boards = boards_by_project.get(project.id, [])
+        out.append({
+            "id": project.id,
+            "name": project.name,
+            "boards": boards,
+            "board_count": len(boards),
+            "task_count": sum(board["task_count"] for board in boards),
+            "open_task_count": sum(board["open_task_count"] for board in boards),
+            "completed_task_count": sum(board["completed_task_count"] for board in boards),
+        })
     return out
 
 

@@ -18,12 +18,16 @@ class BoardScreen extends StatefulWidget {
     required this.boardId,
     required this.boardName,
     this.projects = const [],
+    this.syncListener,
   });
 
   final Api api;
   final int boardId;
   final String boardName;
   final List<Map<String, dynamic>> projects; // for board move/delete dialogs
+
+  @visibleForTesting
+  final void Function(String scope, void Function() onEvent)? syncListener;
 
   @override
   State<BoardScreen> createState() => _BoardScreenState();
@@ -48,8 +52,16 @@ class _BoardScreenState extends State<BoardScreen> {
   /// so the board still refreshes (slow-poll fallback). Reloads skip the
   /// spinner (silent refresh) so a remote change never blanks the screen.
   void _subscribeSync() {
+    final scope = 'board:${widget.boardId}';
+    if (widget.syncListener != null) {
+      widget.syncListener!(scope, () {
+        if (mounted) _load(silent: true);
+      });
+      _syncCancel = () {};
+      return;
+    }
     final bus = SyncBus.forApi(widget.api);
-    _syncCancel = bus.listen('board:${widget.boardId}', (_) {
+    _syncCancel = bus.listen(scope, (_) {
       if (mounted) _load(silent: true);
     });
   }
@@ -158,8 +170,8 @@ class _BoardScreenState extends State<BoardScreen> {
               onPressed: () => Navigator.pop(ctx, 'delete'),
               child: const Text('Obriši ploču', style: TextStyle(color: Color(0xFFDC2626))),
             ),
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Odustani')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Spremi')),
+            TextButton(onPressed: () => Navigator.pop(ctx, 'cancel'), child: const Text('Odustani')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, 'save'), child: const Text('Spremi')),
           ],
         ),
       ),
@@ -429,9 +441,31 @@ class _BoardScreenState extends State<BoardScreen> {
   @override
   Widget build(BuildContext context) {
     final columns = (_board?['columns'] as List<dynamic>? ?? []);
+    final totalTasks = columns.fold<int>(0, (sum, raw) => sum + ((raw as Map)['tasks'] as List<dynamic>? ?? []).length);
+    final completedTasks = columns.fold<int>(0, (sum, raw) => sum + ((raw as Map)['tasks'] as List<dynamic>? ?? []).where((task) => (task as Map)['completed'] == true).length);
+    final openTasks = totalTasks - completedTasks;
+    final progress = totalTasks == 0 ? 0 : ((completedTasks / totalTasks) * 100).round();
+    final boardId = _board?['id'] as int? ?? widget.boardId;
+    Map<String, dynamic>? project;
+    for (final candidate in widget.projects) {
+      final boards = candidate['boards'] as List<dynamic>? ?? const [];
+      if (boards.any((entry) => entry is Map && entry['id'] == boardId)) {
+        project = candidate;
+        break;
+      }
+    }
     return Scaffold(
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
-        title: Text(_board?['name'] as String? ?? widget.boardName),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_board?['name'] as String? ?? widget.boardName),
+            if (!_loading) Text('${project?['name'] ?? 'Projekt'}  ·  $openTasks otvoreno  ·  $totalTasks zadataka  ·  $progress% gotovo',
+                style: const TextStyle(color: SR.muted, fontSize: 10, fontWeight: FontWeight.w500)),
+          ],
+        ),
         actions: [
           IconButton(
             tooltip: 'Pretraži',
@@ -480,8 +514,9 @@ class _BoardScreenState extends State<BoardScreen> {
                     scrollDirection: Axis.horizontal,
                     padding: const EdgeInsets.all(12),
                     children: [
-                      for (final col in columns)
+                      for (final (columnIndex, col) in columns.indexed)
                         _ColumnView(
+                          index: columnIndex,
                           name: col['name'] as String? ?? '',
                           raw: Map<String, dynamic>.from(col as Map),
                           tasks: List<Map<String, dynamic>>.from(
@@ -531,6 +566,7 @@ class _BoardScreenState extends State<BoardScreen> {
 
 class _ColumnView extends StatelessWidget {
   const _ColumnView({
+    required this.index,
     required this.name,
     required this.raw,
     required this.tasks,
@@ -544,6 +580,7 @@ class _ColumnView extends StatelessWidget {
     required this.onDeleteColumn,
   });
 
+  final int index;
   final String name;
   final Map<String, dynamic> raw;
   final List<Map<String, dynamic>> tasks;
@@ -558,13 +595,18 @@ class _ColumnView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final accent = SR.columnAccents[index % SR.columnAccents.length];
     return Container(
       width: 290,
-      margin: const EdgeInsets.only(right: 12),
-      padding: const EdgeInsets.all(10),
+      margin: const EdgeInsets.only(right: 12, top: 2, bottom: 2),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: SR.panel,
-        borderRadius: BorderRadius.circular(10),
+        gradient: const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0x14FFFFFF), Color(0x05FFFFFF)],
+        ),
+        borderRadius: BorderRadius.circular(22),
         border: Border.all(color: SR.line),
       ),
       child: Column(
@@ -577,7 +619,20 @@ class _ColumnView extends StatelessWidget {
                   onTap: () => onRenameColumn(raw),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Text(name, style: const TextStyle(fontWeight: FontWeight.w700)),
+                    child: Row(
+                      children: [
+                        Container(width: 7, height: 7, decoration: BoxDecoration(color: accent, shape: BoxShape.circle)),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(name.toUpperCase(), maxLines: 1, overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 11, letterSpacing: 1.0, fontWeight: FontWeight.w800, color: SR.muted))),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(color: Colors.white.withAlpha(25), borderRadius: BorderRadius.circular(99)),
+                          child: Text('${tasks.where((task) => task['completed'] != true).length}',
+                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: SR.text)),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -651,8 +706,12 @@ class _TodoPanel extends StatelessWidget {
       margin: const EdgeInsets.only(right: 12),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: const Color(0x14FFFFFF), // subtle tint like the web's dashed panel
-        borderRadius: BorderRadius.circular(10),
+        gradient: const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0x0FFFFFFF), Color(0x04FFFFFF)],
+        ),
+        borderRadius: BorderRadius.circular(22),
         border: Border.all(color: SR.line),
       ),
       child: Column(
@@ -713,8 +772,8 @@ class _TodoRow extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
       decoration: BoxDecoration(
-        color: done ? const Color(0x1F22C55E) : SR.panelDeep,
-        borderRadius: BorderRadius.circular(8),
+        color: done ? SR.doneWash : SR.panelDeep,
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: done ? SR.done : SR.line),
       ),
       child: Row(
@@ -782,16 +841,16 @@ class _TaskCard extends StatelessWidget {
 
     Color? cardColor;
     if (completed) {
-      cardColor = const Color(0x1F22C55E); // green tint
+      cardColor = SR.doneWash;
     } else if (mentioned) {
-      cardColor = const Color(0x1FF59E0B); // orange tint = tagged me
+      cardColor = SR.mentionWash;
     }
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
         color: cardColor ?? SR.panelDeep,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: completed ? SR.done : (mentioned ? SR.mention : SR.line)),
       ),
       child: Column(
@@ -799,7 +858,7 @@ class _TaskCard extends StatelessWidget {
         children: [
           InkWell(
             onTap: onEdit,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(6, 4, 6, 0),
               child: Row(

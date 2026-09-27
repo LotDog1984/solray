@@ -28,6 +28,14 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     if (_projects == null) _load();
   }
 
+  @override
+  void didUpdateWidget(covariant ProjectsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(widget.projects, oldWidget.projects) && widget.projects != null) {
+      _projects = widget.projects;
+    }
+  }
+
   Future<void> _load() async {
     try {
       final data = await widget.api.get('/api/projects') as List<dynamic>;
@@ -125,7 +133,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
   Widget build(BuildContext context) {
     final projects = _projects;
     return Scaffold(
-      backgroundColor: SR.bg,
+      backgroundColor: Colors.transparent,
       body: RefreshIndicator(
         onRefresh: _load,
         child: ListView(
@@ -144,32 +152,98 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
             const Center(child: Padding(padding: EdgeInsets.all(32), child: CircularProgressIndicator()))
           else ...[
             for (final p in projects)
-              Card(
-                margin: const EdgeInsets.only(bottom: 12),
-                child: ListTile(
-                  leading: const Icon(Icons.folder_outlined, color: SR.accent),
-                  title: Text(p['name'] as String? ?? '', style: const TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: Text(
-                    '${(p['boards'] as List<dynamic>? ?? []).length} ploča',
-                    style: const TextStyle(color: SR.muted, fontSize: 12),
-                  ),
-                  trailing: IconButton(
-                    tooltip: 'Uredi',
-                    icon: const Icon(Icons.edit_outlined, size: 20, color: SR.muted),
-                    onPressed: () => _editProject(p),
-                  ),
-                  onTap: () async {
-                    await Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => BoardsScreen(
-                        api: widget.api,
-                        projectId: p['id'] as int,
-                        projectName: p['name'] as String? ?? '',
+              Builder(builder: (context) {
+                final boards = p['boards'] as List<dynamic>? ?? [];
+                final boardCount = (p['board_count'] as num?)?.toInt() ?? boards.length;
+                final taskCount = (p['task_count'] as num?)?.toInt() ?? boards.fold<int>(
+                    0, (sum, raw) => sum + ((raw['task_count'] as num?)?.toInt() ?? 0));
+                final openCount = (p['open_task_count'] as num?)?.toInt() ?? boards.fold<int>(
+                    0, (sum, raw) => sum + ((raw['open_task_count'] as num?)?.toInt() ??
+                        ((raw['task_count'] as num?)?.toInt() ?? 0)));
+                final completedCount = (p['completed_task_count'] as num?)?.toInt() ?? (taskCount - openCount).clamp(0, taskCount);
+                final progress = taskCount == 0 ? 0 : ((completedCount / taskCount) * 100).round();
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  clipBehavior: Clip.antiAlias,
+                  child: Container(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [Color(0x1FFFFFFF), Color(0x0AFFFFFF)],
                       ),
-                    ));
-                    await _load();
-                  },
-                ),
-              ),
+                    ),
+                    child: Column(
+                      children: [
+                        InkWell(
+                          onTap: () async {
+                            await Navigator.of(context).push(MaterialPageRoute(
+                              builder: (_) => BoardsScreen(
+                                api: widget.api,
+                                projectId: p['id'] as int,
+                                projectName: p['name'] as String? ?? '',
+                              ),
+                            ));
+                            await _load();
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(14, 14, 8, 12),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 42,
+                                  height: 42,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(14),
+                                    gradient: LinearGradient(colors: [SR.accent.withAlpha(70), SR.cyan.withAlpha(50)]),
+                                    border: Border.all(color: SR.line),
+                                  ),
+                                  child: const Icon(Icons.folder_outlined, color: SR.cyan, size: 21),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(p['name'] as String? ?? '', maxLines: 1, overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                                      const SizedBox(height: 5),
+                                      Text('$boardCount ploče  ·  $openCount otvoreno',
+                                          style: const TextStyle(color: SR.muted, fontSize: 11)),
+                                      const SizedBox(height: 3),
+                                      Text('$taskCount zadataka ukupno',
+                                          style: const TextStyle(color: SR.muted2, fontSize: 10)),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                SRProgressRing(progress: taskCount == 0 ? 0 : completedCount / taskCount, label: '$progress%', size: 46),
+                                IconButton(
+                                  tooltip: 'Uredi',
+                                  icon: const Icon(Icons.more_horiz, size: 21, color: SR.muted),
+                                  onPressed: () => _editProject(p),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(14, 0, 14, 13),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(99),
+                            child: LinearProgressIndicator(
+                              value: taskCount == 0 ? 0 : completedCount / taskCount,
+                              minHeight: 4,
+                              backgroundColor: SR.line,
+                              valueColor: const AlwaysStoppedAnimation<Color>(SR.cyan),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }),
             if (projects.isEmpty)
               const Center(
                 child: Padding(

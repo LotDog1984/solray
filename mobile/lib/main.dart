@@ -39,8 +39,12 @@ class MyTeamApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'SolRay',
+      title: 'My Team',
       theme: SR.build(),
+      // Nebula Glass: the aurora backdrop is painted once behind every screen
+      // (scaffolds are transparent — see SR.build), so the whole app shares
+      // one consistent "space" canvas.
+      builder: (context, child) => SR.aurora(context, child),
       home: Bootstrap(initialUrl: initialUrl, initialToken: initialToken, launchPayload: launchPayload),
     );
   }
