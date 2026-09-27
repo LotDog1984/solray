@@ -183,15 +183,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// 1.12.2: end-to-end Google push test — asks the server to send a real
   /// FCM message to THIS account's registered device and shows the exact
   /// result (not configured / not registered / sent / Google's error).
+  /// 1.13.2: the button re-runs the FULL init (permission + token fetch +
+  /// backend registration) instead of relying on a token fetched at app
+  /// boot — a phone that missed its registration at boot heals here.
   Future<void> _testPush() async {
     setState(() {
       _testingPush = true;
       _pushCheck = null;
     });
-    final hasToken = PushNotifications.hasToken;
     try {
       // Make sure registration is fresh before judging the pipeline.
-      if (hasToken) await PushNotifications.registerWithBackend(api);
+      await PushNotifications.init();
+      await PushNotifications.registerWithBackend(api);
       final d = await api.post('/api/me/push/test', {}) as Map<String, dynamic>;
       final reason = d['reason'] as String? ?? '';
       if (d['ok'] == true) {
@@ -214,11 +217,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _updMessage = null;
       _updRelease = null;
     });
-    final release = await Updater.latestRelease();
+    String? lastError;
+    final release = await Updater.latestRelease(lastError: (reason) => lastError = reason);
     if (!mounted) return;
     setState(() => _updChecking = false);
     if (release == null) {
-      setState(() => _updMessage = 'Nije moguće provjeriti (GitHub nedostupan).');
+      // 1.13.2: say WHY the check failed (rate limit / no network / no
+      // release) instead of a bare "GitHub nedostupan".
+      setState(() => _updMessage = lastError ?? 'Nije moguće provjeriti (GitHub nedostupan).');
       return;
     }
     if (Updater.isNewer(release.version, _appVersion)) {

@@ -995,39 +995,72 @@ def test_fcm_push(db: Db, user: CurrentUser):
     rows = db.scalars(select(PushToken).where(PushToken.user_id == user.id)).all()
     if not rows:
         return {"ok": False,
-                "reason": "Ovaj telefon nije registriran za Google push — ažurirajte aplikaciju na 1.12.2+ i otvorite je jednom (Registriraj se).",
+                "reason": "Ovaj telefon nije registriran za Google push — app nije uspjela dobiti FCM token (Play usluge / dopuštenja za obavijesti) ili je starija verzija bez push podrške (1.12.2+). Pritisnite Testiraj ponovno — sada ponovno šalje registraciju.",
                 "configured": True, "devices": 0}
     access = _fcm_access_token()
     if not access:
         return {"ok": False,
                 "reason": "FCM ključ nije ispravan (provjerite service-account JSON i GOOGLE_APPLICATION_CREDENTIALS).",
                 "configured": True, "devices": len(rows)}
-    device = rows[0]
-    created = device.created_at.isoformat() if device.created_at else ""
-    try:
-        resp = requests.post(
-            f"https://fcm.googleapis.com/v1/projects/{FCM_PROJECT_ID}/messages:send",
-            headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
-            json={"message": {"token": device.token,
-                              "notification": {"title": f"{title} test", "body": "Ako ovo vidite, Google push radi 🎉"},
-                              "data": {"title": f"{title} test", "body": "Ako ovo vidite, Google push radi 🎉"},
-                              "android": {"priority": "HIGH",
-                                          "notification": {"channel_id": "solray", "sound": "default"}}}},
-            timeout=8,
-        )
-    except requests.RequestException as e:
-        return {"ok": False, "reason": f"Mrežna greška prema Googleu: {e}",
-                "configured": True, "devices": len(rows)}
-    if resp.status_code == 200:
-        return {"ok": True, "devices": len(rows), "registered_at": created,
-                "reason": f"Poslano na {len(rows)} registriranih uređaja — banner bi trebao biti vidljiv sada."}
-    detail = ""
-    try:
-        detail = resp.json().get("error", {}).get("message", "")
-    except Exception:
-        detail = resp.text[:300]
-    return {"ok": False, "reason": f"Google je odbio poruku (HTTP {resp.status_code}): {detail}",
-            "configured": True, "devices": len(rows)}
+    # 1.13.2: test EVERY registered device, not just rows[0] — a user can
+    # have two phones, and "sent" had been reported while only the first
+    # registered phone actually received the test. Devices Google rejects as
+    # unregistered/expired are pruned and counted in the answer.
+    created = rows[0].created_at.isoformat() if rows[0].created_at else ""
+    ok_devices = 0
+    stale = []
+    last_status = 0
+    last_detail = ""
+    for device in rows:
+        try:
+            resp = requests.post(
+                f"https://fcm.googleapis.com/v1/projects/{FCM_PROJECT_ID}/messages:send",
+                headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
+                json={"message": {"token": device.token,
+                                  "notification": {"title": f"{title} test", "body": "Ako ovo vidite, Google push radi 🎉"},
+                                  "data": {"title": f"{title} test", "body": "Ako ovo vidite, Google push radi 🎉"},
+                                  "android": {"priority": "HIGH",
+                                              "notification": {"channel_id": "solray", "sound": "default"}}}},
+                timeout=8,
+            )
+        except requests.RequestException as e:
+            last_status, last_detail = -1, str(e)
+            continue
+        if resp.status_code == 200:
+            ok_devices += 1
+            continue
+        last_status, last_detail = resp.status_code, ""
+        try:
+            last_detail = resp.json().get("error", {}).get("message", "")
+        except Exception:
+            last_detail = resp.text[:300]
+        # Same pruning rule as send_fcm(): the app was uninstalled or the
+        # token rotated away — drop the row so the device list stays true.
+        if resp.status_code == 404 or (resp.status_code == 400 and "UNREGISTERED" in resp.text):
+            stale.append(device)
+    for row in stale:
+        db.delete(row)
+    if stale:
+        db.commit()
+    if ok_devices:
+        suffix = ""
+        if stale:
+            suffix = f" ({len(stale)} stari uređaj{'i' if len(stale) > 1 else ''} je bio nevažeći i obrisan)"
+        return {"ok": True, "devices": len(rows) - len(stale), "registered_at": created,
+                "reason": f"Poslano na {ok_devices} od {len(rows)} registriranih uređaja — banner bi trebao biti vidljiv sada.{suffix}"}
+    if last_status == -1:
+        return {"ok": False, "reason": f"Mrežna greška prema Googleu: {last_detail}",
+                "configured": True, "devices": len(rows) - len(stale)}
+    hint = ""
+    if last_status == 404 or "UNREGISTERED" in last_detail:
+        hint = " — uređaj više nije registriran kod Googlea; otvorite aplikaciju pa ponovite test"
+    elif last_status == 401:
+        hint = " — ključ na serveru nije ispravan za ovaj Firebase projekt"
+    elif last_status == 403 and " Sender " in last_detail:
+        hint = " — APK je sagrađen s drugim Firebase projektom nego što koristi server (sender mismatch)"
+    return {"ok": False,
+            "reason": f"Google je odbio poruku (HTTP {last_status}): {last_detail or 'bez detalja'}{hint}",
+            "configured": True, "devices": len(rows) - len(stale)}
 
 
 @app.post("/api/me/ntfy/test")

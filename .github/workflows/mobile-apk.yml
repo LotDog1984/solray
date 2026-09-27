@@ -98,6 +98,12 @@ jobs:
         working-directory: mobile
         run: flutter analyze
 
+      # 1.13.2: the unit tests (updater semver, screens, flows) gate the
+      # release — analyze alone never ran them, so a broken test could ship.
+      - name: Test
+        working-directory: mobile
+        run: flutter test
+
       - name: Verify committed signing key (stable across releases)
         working-directory: mobile/android
         run: |

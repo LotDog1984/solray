@@ -33,7 +33,7 @@
 #  the admin and registration closes automatically afterwards.
 #
 #  VERSION HISTORY: see PROJECT.md in the repo (version log section).
-#  Image version below = 1.13.1 (confirmed file deletion in web and mobile).
+#  Image version below = 1.13.2 (push/update-check diagnostics + self-heal).
 #  After updating, set the app name once in Postavke →
 #  Naziv aplikacije to "My Team" — push titles then show it instead of SolRay.
 # =============================================================================
@@ -73,7 +73,7 @@ services:
       retries: 5
 
   backend:
-    image: ghcr.io/lotdog1984/solray-backend:1.13.1      # <<< bump version when updating
+    image: ghcr.io/lotdog1984/solray-backend:1.13.2      # <<< bump version when updating
     restart: unless-stopped
     environment:
       <<: *app-env
@@ -95,7 +95,7 @@ services:
         condition: service_started
 
   frontend:
-    image: ghcr.io/lotdog1984/solray-frontend:1.13.1     # <<< bump version when updating
+    image: ghcr.io/lotdog1984/solray-frontend:1.13.2     # <<< bump version when updating
     restart: unless-stopped
     ports:
       - "9996:80"          # host port for the app (preset for this server)

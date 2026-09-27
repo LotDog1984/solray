@@ -22,14 +22,20 @@ class PushNotifications {
   static String? _currentToken;
   static bool _initialized = false;
   static bool _listening = false;
+  static bool _requestedPermission = false;
 
   /// True when a Firebase token exists on this device (registered or not).
   static bool get hasToken => _currentToken != null;
 
+  /// True when Firebase initialized on this device (a google-services.json
+  /// config is present and working) — 1.13.2 exposes this so diagnostics can
+  /// tell "Firebase is off" apart from "token fetch failed".
+  static bool get isInitialized => _initialized;
+
   /// Initialize Firebase + request the token. Returns the FCM token or null
   /// (no config / permission denied / plugin unavailable — all non-fatal).
   static Future<String?> init() async {
-    if (_initialized) return _currentToken;
+    if (_initialized && _currentToken != null) return _currentToken;
     try {
       await Firebase.initializeApp();
       _initialized = true;
@@ -37,16 +43,26 @@ class PushNotifications {
       return null; // no Firebase config (google-services.json) — stay on ntfy
     }
     try {
-      // Ask for the POST_NOTIFICATIONS runtime permission (Android 13+).
-      await FirebaseMessaging.instance.requestPermission(
-        alert: true,
-        badge: true,
-        sound: true,
-        provisional: false,
-      );
+      // Ask for the POST_NOTIFICATIONS runtime permission (Android 13+),
+      // but only ONCE (1.13.2): re-requesting on every app resume would pop
+      // the system dialog again on phones where the user denied it.
+      if (!_requestedPermission) {
+        _requestedPermission = true;
+        await FirebaseMessaging.instance.requestPermission(
+          alert: true,
+          badge: true,
+          sound: true,
+          provisional: false,
+        );
+      }
+      // 1.13.2: getToken() can legitimately throw on a phone with no Google
+      // Play services / a flaky first network — the old code swallowed the
+      // error AND left _initialized true, so the token was never retried
+      // until the process restarted. Now the failure is recorded and the
+      // next init()/registerWithBackend() call retries the fetch.
       _currentToken = await FirebaseMessaging.instance.getToken();
     } catch (_) {
-      return null;
+      _currentToken = null;
     }
     return _currentToken;
   }
@@ -55,8 +71,14 @@ class PushNotifications {
   /// few times (boot races a waking phone network — the old fire-and-forget
   /// single attempt left the device unregistered for hours); re-reads the
   /// token after each wait so a rotation during retry isn't lost.
+  /// 1.13.2: if the token was never fetched (init failure, no Play services
+  /// at boot), a fresh fetch is attempted here so a re-login/resume heals
+  /// the registration without restarting the app.
   static Future<void> registerWithBackend(Api api) async {
-    if (_currentToken == null) return;
+    if (_currentToken == null) {
+      await init();
+      if (_currentToken == null) return;
+    }
     for (var attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) {
         await Future<void>.delayed(Duration(seconds: 2 * attempt));
