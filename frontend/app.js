@@ -214,6 +214,37 @@ function formatDate(value) {
   }
 }
 
+/* --------------------- 1.15.0 attribution badge line ---------------------- */
+/* Who created it, who marked it done and who edited it last — one muted line
+   on task cards and To-Do rows. Backend sends additive display-name fields
+   (created_by / completed_by|done_by / edited_by); legacy rows have nulls and
+   simply render without a badge. */
+function attributionLine(parts) {
+  const clean = parts.filter((part) => part && part.name);
+  // An "edited" part that just repeats a name already on the line is noise.
+  const shown = clean.filter(
+    (part, i) => !(part.kind === "edited" && clean.some((other, j) => j < i && other.name === part.name))
+  );
+  if (!shown.length) return "";
+  return shown.map((part) => `${part.icon} ${escapeHtml(part.name)}`).join(" · ");
+}
+
+function taskAttribution(task) {
+  return attributionLine([
+    { name: task.created_by, icon: "➕", kind: "created" },
+    { name: task.completed ? task.completed_by : null, icon: "✓", kind: "done" },
+    { name: task.edited_by, icon: "✏️", kind: "edited" },
+  ]);
+}
+
+function todoAttribution(entry) {
+  return attributionLine([
+    { name: entry.created_by, icon: "➕", kind: "created" },
+    { name: entry.is_done ? entry.done_by : null, icon: "🛒", kind: "done" },
+    { name: entry.edited_by, icon: "✏️", kind: "edited" },
+  ]);
+}
+
 function logout(clearMessage = true) {
   localStorage.removeItem("token");
   api.token = "";
@@ -1164,7 +1195,14 @@ function renderTodoEntries(entries) {
       (e) => `
       <div class="todo-panel-row ${e.is_done ? "is-done" : ""}" data-entry-id="${e.id}">
         <input type="checkbox" class="todo-panel-check" data-entry-id="${e.id}" ${e.is_done ? "checked" : ""} title="Označi kao nabavljeno" />
-        <button type="button" class="link-btn todo-panel-text" title="Uredi stavku">${escapeHtml(e.title)}</button>
+        <div class="todo-panel-main">
+          <button type="button" class="link-btn todo-panel-text" title="Uredi stavku">${escapeHtml(e.title)}</button>
+          ${
+            todoAttribution(e)
+              ? `<span class="todo-panel-attr muted">${todoAttribution(e)}</span>`
+              : ""
+          }
+        </div>
         <button type="button" class="danger todo-panel-del" data-entry-id="${e.id}" title="Obriši stavku">✕</button>
       </div>`
     )
@@ -1254,6 +1292,7 @@ function renderTask(task) {
         : ""
     }
     <small>${task.assignee ? `👤 ${escapeHtml(task.assignee)}` : "Nedodijeljeno"}</small>
+    ${taskAttribution(task) ? `<small class="muted">${taskAttribution(task)}</small>` : ""}
     ${task.description ? `<p>${escapeHtml(task.description)}</p>` : ""}
     ${
       hasItems && !open
@@ -1735,6 +1774,7 @@ async function renderNabava() {
         <input type="checkbox" class="nabava-check" data-entry-id="${e.id}" ${e.is_done ? "checked" : ""} title="Označi kao nabavljeno" />
         <div class="nabava-main">
           <button type="button" class="nabava-title" data-entry-id="${e.id}" data-board-id="${e.board_id || ""}" title="Uredi stavku">${escapeHtml(e.title)}</button>
+          ${todoAttribution(e) ? `<span class="nabava-attr muted">${todoAttribution(e)}</span>` : ""}
           ${
             e.board_id
               ? `<button type="button" class="link-btn nabava-origin" data-board-id="${e.board_id}" title="Otvori ploču">📁 ${escapeHtml(e.project_name || "")} → ${escapeHtml(e.board_name || "")}</button>`

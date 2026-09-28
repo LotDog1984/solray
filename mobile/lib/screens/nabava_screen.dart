@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../api.dart';
+import '../attrib.dart';
 import '../theme.dart';
 import 'board_screen.dart';
 
@@ -341,18 +342,31 @@ class NabavaEntryCard extends StatelessWidget {
         ),
         subtitle: Padding(
           padding: const EdgeInsets.only(top: 2),
-          child: manual
-              ? const Text(
-                  '✍️ Ručno dodano',
-                  style: TextStyle(color: SR.muted, fontSize: 12),
-                )
-              : InkWell(
-                  onTap: () => onOpen(entry),
-                  child: Text(
-                    '📁 ${project.isNotEmpty ? '$project → ' : ''}$board',
-                    style: const TextStyle(color: Color(0xFF93C5FD), fontSize: 12),
-                  ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Origin (which board/project it came from) — as before.
+              manual
+                  ? const Text(
+                      '✍️ Ručno dodano',
+                      style: TextStyle(color: SR.muted, fontSize: 12),
+                    )
+                  : InkWell(
+                      onTap: () => onOpen(entry),
+                      child: Text(
+                        '📁 ${project.isNotEmpty ? '$project → ' : ''}$board',
+                        style: const TextStyle(color: Color(0xFF93C5FD), fontSize: 12),
+                      ),
+                    ),
+              // 1.15.0: who added / bought / last edited the Stavka.
+              if (attributionBadge(todoAttributionLine(entry)) != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 1),
+                  child: attributionBadge(todoAttributionLine(entry)),
                 ),
+            ],
+          ),
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,

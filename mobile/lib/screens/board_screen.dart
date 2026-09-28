@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../attrib.dart';
 import '../services/sync.dart';
 import '../theme.dart';
 import 'search_screen.dart';
@@ -823,13 +824,25 @@ class _TodoRow extends StatelessWidget {
           Expanded(
             child: InkWell(
               onTap: () => onRename(entry),
-              child: Text(
-                entry['title'] as String? ?? '',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: done ? SR.done : SR.text,
-                  decoration: done ? TextDecoration.lineThrough : null,
-                ),
+              // 1.15.0: title + the attribution line (added/done/edited by).
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    entry['title'] as String? ?? '',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: done ? SR.done : SR.text,
+                      decoration: done ? TextDecoration.lineThrough : null,
+                    ),
+                  ),
+                  if (attributionBadge(todoAttributionLine(entry)) != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 1),
+                      child: attributionBadge(todoAttributionLine(entry)),
+                    ),
+                ],
               ),
             ),
           ),
@@ -947,6 +960,12 @@ class _TaskCard extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 4),
               child: Text('👤 ${task['assignee']}', style: const TextStyle(color: SR.muted, fontSize: 12)),
+            ),
+          // 1.15.0: who created / marked done / last edited this task.
+          if (attributionBadge(taskAttributionLine(task)) != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 4),
+              child: attributionBadge(taskAttributionLine(task)),
             ),
           if (items.isNotEmpty) ...[
             Padding(

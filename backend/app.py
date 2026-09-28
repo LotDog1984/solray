@@ -159,9 +159,18 @@ class Task(Base):
     position: Mapped[int] = mapped_column(Integer, default=0)
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 1.15.0: who completed the task (NULL for unticked/legacy tasks).
+    completed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    # 1.15.0: last user who edited the task (any PATCH, incl. checklist edits).
+    edited_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    # 1.15.0: when the last edit happened — lets the UI hide stale badges.
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     assignee: Mapped[User | None] = relationship(foreign_keys=[assignee_id])
+    creator: Mapped[User] = relationship(foreign_keys=[created_by_id])
+    completed_by: Mapped[User | None] = relationship(foreign_keys=[completed_by_id])
+    edited_by: Mapped[User | None] = relationship(foreign_keys=[edited_by_id])
     items: Mapped[list["TaskItem"]] = relationship(cascade="all, delete-orphan", order_by="TaskItem.position")
 
 
@@ -198,6 +207,15 @@ class TodoEntry(Base):
     todo_list_id: Mapped[int] = mapped_column(ForeignKey("todo_lists.id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column(String(255))
     is_done: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 1.15.0: attribution — who added the Stavka, who ticked it done and who
+    # edited it last. All nullable: existing rows and simple client PATCHes.
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    done_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    edited_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    creator: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+    done_by: Mapped[User | None] = relationship(foreign_keys=[done_by_id])
+    edited_by: Mapped[User | None] = relationship(foreign_keys=[edited_by_id])
     # 1.10.0: when the Stavka was ticked as bought — orders the checked items
     # (most recently checked first) in the global Nabava view.
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -905,6 +923,15 @@ def startup() -> None:
         conn.execute(text("ALTER TABLE todo_lists ALTER COLUMN board_id DROP NOT NULL"))
         # 1.10.0: when a Stavka was ticked as bought (orders checked items)
         conn.execute(text("ALTER TABLE todo_entries ADD COLUMN IF NOT EXISTS checked_at TIMESTAMPTZ NULL"))
+        # 1.15.0: per-user attribution — who completed a task, who added/ticked/
+        # edited a Stavka, and who touched a task last. All nullable.
+        conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_by_id INTEGER"))
+        conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS edited_by_id INTEGER"))
+        conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE todo_entries ADD COLUMN IF NOT EXISTS created_by_id INTEGER"))
+        conn.execute(text("ALTER TABLE todo_entries ADD COLUMN IF NOT EXISTS done_by_id INTEGER"))
+        conn.execute(text("ALTER TABLE todo_entries ADD COLUMN IF NOT EXISTS edited_by_id INTEGER"))
+        conn.execute(text("ALTER TABLE todo_entries ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ NULL"))
     # Backfill: put every existing board into a default project so nothing is lost.
     db = SessionLocal()
     try:
@@ -1324,6 +1351,15 @@ def delete_user(user_id: int, db: Db, user: CurrentUser):
     db.execute(update(Task).where(Task.created_by_id == user_id).values(created_by_id=user.id))
     db.execute(update(Task).where(Task.assignee_id == user_id).values(assignee_id=None))
     db.execute(update(StoredFile).where(StoredFile.uploaded_by_id == user_id).values(uploaded_by_id=user.id))
+    # 1.15.0: attribution columns are plain users.id FKs too. Creation is
+    # re-linked to the acting admin (same as tasks.created_by_id above);
+    # completed/edited/done attribution is simply cleared — the fact remains,
+    # the name would be wrong.
+    db.execute(update(Task).where(Task.completed_by_id == user_id).values(completed_by_id=None))
+    db.execute(update(Task).where(Task.edited_by_id == user_id).values(edited_by_id=None))
+    db.execute(update(TodoEntry).where(TodoEntry.created_by_id == user_id).values(created_by_id=user.id))
+    db.execute(update(TodoEntry).where(TodoEntry.done_by_id == user_id).values(done_by_id=None))
+    db.execute(update(TodoEntry).where(TodoEntry.edited_by_id == user_id).values(edited_by_id=None))
 
     db.delete(target)
     db.commit()
@@ -1599,11 +1635,31 @@ def search_everything(db: Db, user: CurrentUser, q: str = ""):
     return {"results": results}
 
 
+# --------------------------- 1.15.0 attribution ----------------------------
+
+
+def display_name_of(user: User | None) -> str | None:
+    """Display name for attribution badges ("Created by", "Done by", "Edited").
+    NULL when there is nothing to show (legacy rows, unticked tasks)."""
+    return user.display_name if user else None
+
+
 def serialize_todo_entries(entries: list[TodoEntry]) -> list[dict]:
-    """Ordered entries with an index stable for UI updates."""
+    """Ordered entries with an index stable for UI updates. 1.15.0: additive
+    attribution fields (created_by / done_by / edited_by display names)."""
     ordered = sorted(entries, key=lambda e: e.position)
     return [
-        {"id": e.id, "title": e.title, "is_done": e.is_done, "position": e.position, "index": idx}
+        {
+            "id": e.id,
+            "title": e.title,
+            "is_done": e.is_done,
+            "position": e.position,
+            "index": idx,
+            "created_by": display_name_of(e.creator),
+            "done_by": display_name_of(e.done_by) if e.is_done else None,
+            "edited_by": display_name_of(e.edited_by),
+            "edited_at": e.edited_at.isoformat() if e.edited_at else None,
+        }
         for idx, e in enumerate(ordered)
     ]
 
@@ -1737,6 +1793,12 @@ def serialize_task(task: Task) -> dict:
         "position": task.position,
         "completed": task.completed,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        # 1.15.0: attribution — who created, who completed and who edited last
+        # (additive display-name fields for the user badges).
+        "created_by": task.creator.display_name if task.creator else None,
+        "completed_by": display_name_of(task.completed_by),
+        "edited_by": display_name_of(task.edited_by),
+        "edited_at": task.edited_at.isoformat() if task.edited_at else None,
         "items": [
             {"id": i.id, "title": i.title, "is_done": i.is_done, "position": i.position}
             for i in items
@@ -1835,7 +1897,13 @@ def update_task(task_id: int, payload: TaskIn, db: Db, user: CurrentUser):
                 db.delete(row)
     if payload.completed is not None and not task.items:
         task.completed = payload.completed
+    # 1.15.0: attribution — every edit records who touched it last.
+    task.edited_by_id = user.id
+    task.edited_at = datetime.now(timezone.utc)
     recompute_task_completion(db, task)
+    # recompute may have flipped the completed flag (checklist edits) — stamp
+    # the actor AFTER it, so the user who completed the task gets the badge.
+    task.completed_by_id = user.id if task.completed else None
     notify_task_users(db, user, task)
     db.commit()
     notify_change("board", task_board_id(db, task.column_id))
@@ -1854,6 +1922,8 @@ def toggle_completed(task_id: int, db: Db, user: CurrentUser):
         raise HTTPException(status_code=400, detail="Zadatak sa popisom završava se kad su sve stavke označene")
     task.completed = not task.completed
     task.completed_at = datetime.now(timezone.utc) if task.completed else None
+    # 1.15.0: remember who ticked the task done (cleared on untick).
+    task.completed_by_id = user.id if task.completed else None
     db.commit()
     notify_change("board", task_board_id(db, task.column_id))
     return {"ok": True, "completed": task.completed}
@@ -1874,7 +1944,12 @@ def add_task_item(task_id: int, payload: TaskItemIn, db: Db, user: CurrentUser):
     db.add(item)
     db.flush()
     was_completed = task.completed
+    task.edited_by_id = user.id
+    task.edited_at = datetime.now(timezone.utc)
     recompute_task_completion(db, task)
+    # Ticking the last checklist item completes the task — that actor is the
+    # one shown as "Done by" (unticking clears it).
+    task.completed_by_id = user.id if task.completed else None
     db.commit()
     notify_change("board", task_board_id(db, task.column_id))
     return {"id": item.id, "completed_changed": task.completed != was_completed}
@@ -1896,7 +1971,10 @@ def update_task_item(task_id: int, item_id: int, payload: TaskItemIn, db: Db, us
     item.is_done = payload.is_done
     if payload.position is not None:
         item.position = payload.position
+    task.edited_by_id = user.id
+    task.edited_at = datetime.now(timezone.utc)
     recompute_task_completion(db, task)
+    task.completed_by_id = user.id if task.completed else None
     db.commit()
     notify_change("board", task_board_id(db, task.column_id))
     return {"ok": True, "completed": task.completed, "completed_changed": task.completed != was_completed}
@@ -1914,7 +1992,10 @@ def delete_task_item(task_id: int, item_id: int, db: Db, user: CurrentUser):
     lock_task_for_update(db, task.id)
     db.delete(item)
     was_completed = task.completed
+    task.edited_by_id = user.id
+    task.edited_at = datetime.now(timezone.utc)
     recompute_task_completion(db, task)
+    task.completed_by_id = user.id if task.completed else None
     db.commit()
     notify_change("board", task_board_id(db, task.column_id))
     return {"ok": True, "completed": task.completed, "completed_changed": task.completed != was_completed}
@@ -1929,6 +2010,8 @@ def move_task(task_id: int, payload: TaskMoveIn, db: Db, user: CurrentUser):
     ensure_board_access(db, user, task_board_id(db, payload.column_id))
     task.column_id = payload.column_id
     task.position = payload.position
+    task.edited_by_id = user.id  # 1.15.0: a move is an edit too
+    task.edited_at = datetime.now(timezone.utc)
     db.commit()
     notify_change("board", task_board_id(db, payload.column_id))
     return {"ok": True}
@@ -1991,6 +2074,11 @@ def serialize_nabava_row(entry: TodoEntry, todo: TodoList, board: Board | None, 
         "checked_at": entry.checked_at.isoformat() if entry.checked_at else None,
         "position": entry.position,
         "created_at": entry.created_at.isoformat() if entry.created_at else None,
+        # 1.15.0: attribution display names for the user badges.
+        "created_by": display_name_of(entry.creator),
+        "done_by": display_name_of(entry.done_by) if entry.is_done else None,
+        "edited_by": display_name_of(entry.edited_by),
+        "edited_at": entry.edited_at.isoformat() if entry.edited_at else None,
     }
 
 
@@ -2021,7 +2109,8 @@ def add_todo_entry(board_id: int, payload: TodoEntryIn, db: Db, user: CurrentUse
     if not title:
         raise HTTPException(status_code=400, detail="Stavka ne smije biti prazna")
     position = db.scalar(select(func.max(TodoEntry.position)).where(TodoEntry.todo_list_id == todo.id)) or 0
-    entry = TodoEntry(todo_list_id=todo.id, title=title[:255], is_done=False, position=position + 1)
+    # 1.15.0: record who added the Stavka.
+    entry = TodoEntry(todo_list_id=todo.id, title=title[:255], is_done=False, position=position + 1, created_by_id=user.id)
     db.add(entry)
     db.commit()
     db.refresh(entry)
@@ -2045,6 +2134,11 @@ def update_todo_entry(board_id: int, entry_id: int, payload: TodoEntryIn, db: Db
         # 1.10.0: stamp when the item was bought; clear the stamp on untick.
         entry.is_done = payload.is_done
         entry.checked_at = datetime.now(timezone.utc) if payload.is_done else None
+        # 1.15.0: remember who ticked the Stavka as bought (cleared on untick).
+        entry.done_by_id = user.id if payload.is_done else None
+    # 1.15.0: a title rename (or any PATCH) records who edited it last.
+    entry.edited_by_id = user.id
+    entry.edited_at = datetime.now(timezone.utc)
     db.commit()
     notify_change("board", board_id)
     notify_change("nabava")
@@ -2086,7 +2180,8 @@ def add_nabava_item(payload: TodoEntryIn, db: Db, user: CurrentUser):
         raise HTTPException(status_code=400, detail="Stavka ne smije biti prazna")
     todo = get_global_todo_list(db)
     position = db.scalar(select(func.max(TodoEntry.position)).where(TodoEntry.todo_list_id == todo.id)) or 0
-    entry = TodoEntry(todo_list_id=todo.id, title=title[:255], is_done=False, position=position + 1)
+    # 1.15.0: record who added the Stavka.
+    entry = TodoEntry(todo_list_id=todo.id, title=title[:255], is_done=False, position=position + 1, created_by_id=user.id)
     db.add(entry)
     db.commit()
     db.refresh(entry)
@@ -2106,6 +2201,11 @@ def update_nabava_item(entry_id: int, payload: NabavaItemIn, db: Db, user: Curre
         # 1.10.0: stamp when the item was bought; clear the stamp on untick.
         entry.is_done = payload.is_done
         entry.checked_at = datetime.now(timezone.utc) if payload.is_done else None
+        # 1.15.0: remember who ticked the Stavka as bought (cleared on untick).
+        entry.done_by_id = user.id if payload.is_done else None
+    # 1.15.0: a title rename (or any PATCH) records who edited it last.
+    entry.edited_by_id = user.id
+    entry.edited_at = datetime.now(timezone.utc)
     db.commit()
     notify_change("nabava")
     return {"ok": True}

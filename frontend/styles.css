@@ -1201,9 +1201,24 @@ textarea {
   font-size: 14px;
 }
 
-.todo-panel-row .todo-panel-text {
+.todo-panel-main {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.todo-panel-main .todo-panel-text {
+  align-self: flex-start;
   word-break: break-word;
+}
+
+/* 1.15.0: per-user attribution badge (added/done/edited by) */
+.todo-panel-attr,
+.nabava-attr {
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 .todo-panel-row.is-done {

@@ -1,7 +1,7 @@
 name: solray
 description: My Team mobile client — connects to any My Team instance by URL.
 publish_to: "none"
-version: 1.14.1+23
+version: 1.15.0+24
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
