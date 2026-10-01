@@ -200,10 +200,15 @@ textarea {
 
 .shell {
   min-height: 100vh;
+  min-height: 100dvh; /* iOS standalone: vh includes the home-indicator bar, dvh doesn't */
   display: grid;
   grid-template-columns: 74px 268px minmax(0, 1fr);
   position: relative;
   z-index: 1;
+  /* 1.15.1: in the installed app the page runs under the notch/status bar and
+     home indicator — every layout edge pads itself with the safe-area insets. */
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 
 .sidebar {
@@ -212,7 +217,7 @@ textarea {
   -webkit-backdrop-filter: blur(20px);
   border-right: 1px solid var(--line);
   color: var(--text);
-  padding: 20px;
+  padding: calc(20px + env(safe-area-inset-top)) 20px calc(20px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -1362,12 +1367,13 @@ span.nabava-origin {
   top: 0;
   z-index: 5;
   height: 100vh;
+  height: 100dvh;
   min-height: 640px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  padding: 16px 0;
+  padding: calc(16px + env(safe-area-inset-top)) 0 calc(16px + env(safe-area-inset-bottom));
   background: linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.018));
   border-right: 1px solid var(--line);
   backdrop-filter: blur(20px);
@@ -1467,10 +1473,12 @@ span.nabava-origin {
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
   min-height: 640px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 19px 15px 14px;
+  -webkit-overflow-scrolling: touch;
+  padding: calc(19px + env(safe-area-inset-top)) 15px calc(14px + env(safe-area-inset-bottom));
   gap: 14px;
   background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.015));
   border-right: 1px solid var(--line);
@@ -1675,11 +1683,50 @@ span.nabava-origin {
 }
 
 @media (max-width: 560px) {
-  .shell { display:grid; grid-template-columns:1fr; grid-template-rows:auto minmax(0,1fr) 64px; min-height:100vh; }
-  .sidebar { grid-row:1; position:relative; top:auto; height:auto; min-height:0; max-height:34vh; padding:12px 14px; gap:10px; }
+  /* 1.15.1 iPhone standalone fixes: the old phone layout capped the sidebar at
+     34vh (≈2 board rows) with overflow:hidden, so installed-home-screen users
+     could only SEE ~2 boards. The sidebar is now an ordinary full-height flex
+     panel: title block, then a scrollable board list that gets all leftover
+     space, then the form. Safe-area insets keep everything clear of the
+     notch, Dynamic Island and home indicator. */
+  .shell { display:grid; grid-template-columns:1fr; grid-template-rows:auto minmax(0,1fr) calc(64px + env(safe-area-inset-bottom)); min-height:100vh; min-height:100dvh; }
+  .sidebar {
+    grid-row:1;
+    grid-column:1;
+    display:flex;
+    flex-direction:column;
+    position:relative;
+    top:auto;
+    left:auto;
+    right:auto;
+    height:auto;
+    min-height:0;
+    /* Capped at 60% of the real viewport (was 34vh — that hid all but ~2
+       boards): the project/board list inside scrolls, so EVERY board is
+       reachable, while the board view below still keeps most of the screen. */
+    max-height:60dvh;
+    overflow:hidden; /* the .side-layer inside scrolls, not the whole panel */
+    padding:calc(10px + env(safe-area-inset-top)) 14px 10px;
+    gap:10px;
+  }
   .sidebar-foot { display:none; }
-  .content { grid-row:2; min-height:0; padding:14px 12px 84px; }
-  .icon-rail { grid-row:3; position:fixed; top:auto; bottom:0; left:0; right:0; z-index:10; width:100%; height:64px; min-height:0; flex-direction:row; justify-content:space-around; gap:4px; padding:8px max(8px,env(safe-area-inset-left)) calc(8px + env(safe-area-inset-bottom)); border-right:0; border-top:1px solid var(--line); box-shadow:0 -10px 30px rgba(4,6,22,.4); }
+  /* Scrollable middle of the sidebar: projects / boards list. */
+  .sidebar .side-layer {
+    flex:1;
+    min-height:0;
+    overflow-y:auto;
+    overflow-x:hidden;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;
+    scrollbar-width:thin;
+    scrollbar-color:rgba(255,255,255,.18) transparent;
+  }
+  /* Give rows real finger-sized targets (Apple HIG: ≥44px). */
+  .side-name { min-height:44px; }
+  .side-row .icon-action { min-height:44px; min-width:44px; }
+  .project-nav { min-height:44px; }
+  .content { grid-row:2; grid-column:1; min-height:0; overflow:visible; padding:12px calc(12px + env(safe-area-inset-left)) 84px calc(12px + env(safe-area-inset-right)); }
+  .icon-rail { grid-row:2; position:fixed; top:auto; bottom:0; left:0; right:0; z-index:10; width:100%; height:calc(64px + env(safe-area-inset-bottom)); min-height:0; flex-direction:row; justify-content:space-around; gap:4px; padding:8px max(8px,env(safe-area-inset-left)) calc(8px + env(safe-area-inset-bottom)); border-right:0; border-top:1px solid var(--line); box-shadow:0 -10px 30px rgba(4,6,22,.4); }
   .rail-mark,.rail-spacer,.rail-button[data-rail-action="search"] { display:none; }
   .rail-button,.rail-avatar { width:40px; min-width:40px; height:40px; min-height:40px; }
   .rail-button.active { box-shadow:0 5px 14px rgba(109,92,246,.3); }
@@ -1690,18 +1737,19 @@ span.nabava-origin {
   .topbar-actions { width:100%; justify-content:space-between; margin-left:0; }
   .topbar-actions > .primary { flex:1; justify-content:center; }
   .tabs { flex:none; }
+  .tabs button { min-height:40px; padding:0 16px; font-size:13px; }
   .kanban { grid-auto-columns:minmax(260px,86vw); }
-  .column { height:calc(100vh - 270px); min-height:440px; }
+  .column { height:calc(100dvh - 270px); min-height:440px; }
   .project-side-card { grid-template-columns:minmax(0,1fr) 36px 28px; padding:5px 7px 4px 9px; }
-  .project-side-card .icon-action { min-height:28px; }
-  .side-list.project-list { display:flex; gap:8px; max-width:100%; overflow-x:auto; padding:2px 2px 6px; scrollbar-width:thin; }
-  .project-side-item { flex:0 0 min(245px,72vw); }
+  .project-side-card .icon-action { min-height:44px; }
+  .side-list.project-list { display:flex; flex-direction:column; gap:8px; max-width:100%; overflow:visible; padding:2px 2px 6px; }
+  .project-side-item { flex:none; }
   .project-progress-track { margin-top:4px; }
   .side-section-head { padding-top:0; }
-  .side-layer { gap:8px; max-width:100%; overflow:hidden; }
   .account-line { display:none; }
-  .side-search input { height:38px; }
-  .side-form { display:none; }
+  .side-search input { height:44px; font-size:16px; } /* 16px: iOS zooms into smaller inputs */
+  .side-form { display:flex; }
+  .side-form input { height:44px; font-size:16px; }
 }
 
 @media (max-width:480px) {

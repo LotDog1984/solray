@@ -1234,6 +1234,18 @@ def get_vapid_public(db: Db, user: CurrentUser):
     return {"public_key": keys[1]}
 
 
+@app.get("/api/me/webpush/subscriptions")
+def webpush_subscriptions(db: Db, user: CurrentUser):
+    """1.15.1: endpoints currently stored for this account. The PWA compares
+    its own live browser subscription against this list and silently
+    re-uploads it when the server row went missing (wiped DB, fresh install
+    of the same browser profile) — push 'mysteriously' stops working then."""
+    endpoints = db.scalars(
+        select(PushSubscription.endpoint).where(PushSubscription.user_id == user.id)
+    ).all()
+    return {"endpoints": endpoints}
+
+
 @app.post("/api/me/webpush/subscribe")
 def webpush_subscribe(payload: WebPushSubscribeIn, db: Db, user: CurrentUser):
     """Store a browser push subscription (called from the PWA after the

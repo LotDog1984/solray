@@ -59,10 +59,16 @@ const state = {
 
 const app = document.querySelector("#app");
 
-/* --------------------------- PWA plumbing (1.14.0) -------------------------
+/* --------------------------- PWA plumbing (1.14.0, refined 1.15.1) ---------
  * The web app installs to the iPhone/Android home screen (no app store, no
  * Apple account, nothing that expires). The service worker enables that +
  * delivers Web Push banners; the Obavijesti page hosts the enable/test UI.
+ *
+ * 1.15.1: on iPhone/iPad Web Push banners ONLY arrive inside the app
+ * installed on the home screen — a plain Safari tab can subscribe (and the
+ * server delivers just fine) but iOS shows nothing there, which looked like
+ * "push is broken". The UI now detects the install context and gives honest
+ * instructions, re-enabling always re-subscribes + sends a real test push.
  * -------------------------------------------------------------------------- */
 let deferredInstallPrompt = null;
 let pendingBoardFromUrl = null;
@@ -95,6 +101,22 @@ function urlB64ToUint8Array(b64) {
   return Uint8Array.from(raw, (c) => c.charCodeAt(0));
 }
 
+/* iPhone/iPad detection (iPadOS 13+ claims to be a Mac, hence the touch check). */
+function isIosDevice() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+/* Running as the installed home-screen app (not a browser tab)? */
+function isStandaloneApp() {
+  return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
+    window.navigator.standalone === true; /* iOS sets this only in the installed app */
+}
+
+const IOS_TAB_HINT =
+  'Na iPhoneu/iPadu obavijesti rade samo u aplikaciji s početnog ekrana, ne u običnom Safari tabu. ' +
+  'U Safariju dodirnite <strong>Dijeli → Na početni ekran</strong>, otvorite My Team s kućnog ekrana pa se vratite ovdje.';
+
 async function webPushStatus() {
   const supported =
     "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
@@ -102,21 +124,34 @@ async function webPushStatus() {
   try {
     const reg = await navigator.serviceWorker.ready;
     const sub = await reg.pushManager.getSubscription();
-    return { supported: true, subscribed: !!sub, permission: Notification.permission };
+    // A stored subscription without a granted permission is dead weight: iOS
+    // silently drops every push until we are re-enabled (Settings or prompt).
+    const permission = Notification.permission;
+    return { supported: true, subscribed: !!sub && permission === "granted", permission };
   } catch {
     return { supported: true, subscribed: false, permission: Notification.permission };
   }
 }
 
 function webPushSectionHtml(wp) {
+  const head = `<h2 style="margin-top:0;">Obavijesti na uređaju</h2>`;
   if (!wp.supported) {
-    return `<div class="panel" style="margin-bottom:16px;"><h2 style="margin-top:0;">Obavijesti na uređaju</h2><p class="muted" style="font-size:13px;margin:0;">Ovaj preglednik ne podržava web obavijesti.</p></div>`;
+    if (isIosDevice()) {
+      return `<div class="panel" style="margin-bottom:16px;">${head}<p class="muted" style="font-size:13px;margin:0 0 6px;">${IOS_TAB_HINT}</p><p class="muted" style="font-size:13px;margin:0;">Trebate i noviju inačicu iOS-a (16.4 ili noviju).</p></div>`;
+    }
+    return `<div class="panel" style="margin-bottom:16px;">${head}<p class="muted" style="font-size:13px;margin:0;">Ovaj preglednik ne podržava web obavijesti.</p></div>`;
   }
   if (wp.permission === "denied") {
-    return `<div class="panel" style="margin-bottom:16px;"><h2 style="margin-top:0;">Obavijesti na uređaju</h2><p class="muted" style="font-size:13px;margin:0;">Obavijesti su blokirane u postavkama preglednika za ovu stranicu — otključajte ih tamo pa osvježite stranicu.</p></div>`;
+    const where = isIosDevice()
+      ? "Postavke → Notifikacije → My Team (ili Safari)"
+      : "postavkama preglednika za ovu stranicu";
+    return `<div class="panel" style="margin-bottom:16px;">${head}<p class="muted" style="font-size:13px;margin:0;">Obavijesti su isključene u ${where} — uključite ih tamo pa osvježite stranicu.</p></div>`;
+  }
+  if (isIosDevice() && !isStandaloneApp()) {
+    return `<div class="panel" style="margin-bottom:16px;">${head}<p class="muted" style="font-size:13px;margin:0;">${IOS_TAB_HINT}</p></div>`;
   }
   if (wp.subscribed) {
-    return `<div class="panel" style="margin-bottom:16px;"><h2 style="margin-top:0;">Obavijesti na uređaju</h2>
+    return `<div class="panel" style="margin-bottom:16px;">${head}
       <p class="muted" style="font-size:13px;margin:0 0 8px;">✓ Obavijesti su uključene na ovom uređaju.</p>
       <div class="row">
         <button class="secondary" id="webPushTest">Testiraj</button>
@@ -124,7 +159,7 @@ function webPushSectionHtml(wp) {
       </div>
       <div id="webPushMsg" class="muted" style="font-size:13px;"></div></div>`;
   }
-  return `<div class="panel" style="margin-bottom:16px;"><h2 style="margin-top:0;">Obavijesti na uređaju</h2>
+  return `<div class="panel" style="margin-bottom:16px;">${head}
     <div class="row"><button id="webPushOn">Omogući obavijesti</button></div>
     <p class="muted" style="font-size:13px;">Za obavijesti i kad je aplikacija zatvorena, dodajte ju na početni ekran: <strong>Dijeli → Na početni ekran</strong> (iPhone) ili "Instaliraj" u adresnoj traci (računalo).</p>
     <div id="webPushMsg" class="muted" style="font-size:13px;"></div></div>`;
@@ -133,13 +168,30 @@ function webPushSectionHtml(wp) {
 async function enableWebPush(msgEl) {
   msgEl.textContent = "Zatražujem dopuštenje…";
   try {
-    const permission = await Notification.requestPermission();
-    if (permission !== "granted") {
-      msgEl.textContent = "Dopuštenje nije odobreno — obavijesti ostaju isključene.";
+    if (Notification.permission === "denied") {
+      msgEl.textContent = isIosDevice()
+        ? "Obavijesti su isključene u iOS Postavkama: Postavke → Notifikacije → My Team, pa osvježite stranicu."
+        : "Obavijesti su blokirane u postavkama preglednika za ovu stranicu.";
       return;
+    }
+    if (Notification.permission === "default") {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        msgEl.textContent = "Dopuštenje nije odobreno — obavijesti ostaju isključene.";
+        return;
+      }
     }
     msgEl.textContent = "Pretplaćujem…";
     const reg = await navigator.serviceWorker.ready;
+    // Always re-subscribe from scratch: a stale browser subscription (fresh
+    // install, wiped data, iOS update) would make the server keep delivering
+    // to a dead endpoint and the user would see nothing.
+    const old = await reg.pushManager.getSubscription();
+    if (old) {
+      try {
+        await old.unsubscribe();
+      } catch { /* best-effort */ }
+    }
     const { public_key } = await api.json("/api/me/webpush/vapid", "GET");
     const sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
@@ -151,7 +203,12 @@ async function enableWebPush(msgEl) {
       keys_p256dh: j.keys.p256dh,
       keys_auth: j.keys.auth,
     });
-    msgEl.textContent = "✓ Obavijesti su omogućene — stigao je i probni banner ako ih je server poslao.";
+    // Don't just claim it works — send the real test push and report honestly.
+    msgEl.textContent = "Šaljem probnu obavijest…";
+    const res = await api.json("/api/me/webpush/test", "POST", {}).catch(() => null);
+    msgEl.textContent = res && res.ok
+      ? `✓ Obavijesti su omogućene. ${res.reason || ""}`
+      : `⚠ Pretplata je spremljena, ali probna obavijest nije poslana: ${(res && res.reason) || "nepoznata greška"}`;
     await renderNotifications();
   } catch (error) {
     msgEl.textContent = `✗ ${error.message}`;
@@ -1691,8 +1748,25 @@ async function renderNotifications() {
   </div>`;
 
   // 1.14.0: device (web) push — status + enable/test/disable right in Obavijesti.
+  // 1.15.1: self-heal — if the browser holds a healthy subscription the server
+  // no longer knows about (wiped row, DB restore), re-upload it silently.
   try {
     const wp = await webPushStatus();
+    if (wp.subscribed) {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        const known = await api.json("/api/me/webpush/subscriptions", "GET");
+        if (sub && known && Array.isArray(known.endpoints) && !known.endpoints.includes(sub.endpoint)) {
+          const j = sub.toJSON();
+          await api.json("/api/me/webpush/subscribe", "POST", {
+            endpoint: j.endpoint,
+            keys_p256dh: j.keys.p256dh,
+            keys_auth: j.keys.auth,
+          });
+        }
+      } catch { /* best-effort */ }
+    }
     const host = document.createElement("div");
     host.innerHTML = webPushSectionHtml(wp);
     view.prepend(host);
