@@ -1669,8 +1669,16 @@ span.nabava-origin {
 .kanban { grid-auto-columns:minmax(270px,1fr); gap:14px; align-items:stretch; padding:3px 2px 14px; }
 .column {
   min-width:0;
-  height:max(520px,calc(100vh - 214px));
-  min-height:520px;
+  /* 1.16.1: the column used to be a fixed-height box (max(520px,100vh-214px))
+     with a visibly overflowing .tasks list, so once a column held more cards
+     than fit, the cards ran past the rounded frame and the column footer.
+     The frame is now sized by its content (height:auto) and the old value
+     survives only as a MINIMUM, so short columns keep the familiar
+     full-height look while long ones grow to contain every task.
+     .kanban's align-items:stretch then makes all columns in a row match the
+     tallest one (and the empty "Nabava"/"nova kolona" tiles too). */
+  height:auto;
+  min-height:max(520px,calc(100vh - 214px));
   padding:12px;
   display:flex;
   flex-direction:column;
@@ -1804,7 +1812,11 @@ span.nabava-origin {
   .tabs { flex:none; }
   .tabs button { min-height:40px; padding:0 16px; font-size:13px; }
   .kanban { grid-auto-columns:minmax(260px,86vw); }
-  .column { height:calc(100dvh - 270px); min-height:440px; }
+  /* 1.16.1 (iOS PWA): same content-driven height as desktop — the old fixed
+     calc(100dvh - 270px) clipped task cards outside the column frame once a
+     column had more tasks than fit. Kept as the MINIMUM so a phone column
+     still fills the screen area under the header on short lists. */
+  .column { height:auto; min-height:max(440px,calc(100dvh - 270px)); }
   .project-side-card { grid-template-columns:minmax(0,1fr) 36px 28px; padding:5px 7px 4px 9px; }
   .project-side-card .icon-action { min-height:44px; }
   .side-list.project-list { display:flex; flex-direction:column; gap:8px; max-width:100%; overflow:visible; padding:2px 2px 6px; }
