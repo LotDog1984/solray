@@ -270,6 +270,40 @@ class _FilesScreenState extends State<FilesScreen> {
     }
   }
 
+  /// 1.17.0 (web parity): rename an uploaded file. PATCH /api/files/{id}
+  /// changes only the display name — the stored bytes keep their path.
+  Future<void> _renameFile(Map<String, dynamic> f) async {
+    final ctrl = TextEditingController(text: f['name'] as String? ?? '');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: SR.panel,
+        title: const Text('Preimenuj datoteku'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Novi naziv datoteke'),
+          onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Odustani')),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()),
+            child: const Text('Spremi'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty || !mounted) return;
+    try {
+      await widget.api.patch('/api/files/${f['id']}', {'name': name});
+      if (!mounted) return;
+      await _load();
+    } catch (e) {
+      _toast(e);
+    }
+  }
+
   Future<void> _deleteFile(Map<String, dynamic> f) async {
     final name = f['name'] as String? ?? 'datoteku';
     final confirmed = await showDialog<bool>(
@@ -353,6 +387,7 @@ class _FilesScreenState extends State<FilesScreen> {
                             subtitle: _size(f['size'] as num? ?? 0),
                             onOpen: () => _openFile(f),
                             onShare: () => _shareFile(f),
+                            onRename: () => _renameFile(f),
                             onDelete: () => _deleteFile(f),
                           ),
                       ],
@@ -386,6 +421,11 @@ class _FilesScreenState extends State<FilesScreen> {
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
+                              IconButton(
+                                tooltip: 'Preimenuj datoteku',
+                                icon: const Icon(Icons.edit_outlined, size: 20, color: SR.muted),
+                                onPressed: () => _renameFile(f),
+                              ),
                               IconButton(
                                 tooltip: 'Podijeli datoteku',
                                 icon: const Icon(Icons.share_outlined, size: 20, color: SR.muted),
@@ -450,6 +490,7 @@ class _GridCard extends StatelessWidget {
     required this.subtitle,
     required this.onOpen,
     required this.onShare,
+    required this.onRename,
     required this.onDelete,
   });
 
@@ -459,6 +500,7 @@ class _GridCard extends StatelessWidget {
   final String subtitle;
   final VoidCallback onOpen;
   final VoidCallback onShare;
+  final VoidCallback onRename;
   final VoidCallback onDelete;
 
   @override
@@ -507,18 +549,29 @@ class _GridCard extends StatelessWidget {
                     style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                   ),
                   Text(subtitle, style: const TextStyle(color: SR.muted, fontSize: 10)),
+                  // Three actions in a ~110px card: zero padding + tight
+                  // constraints keep the row inside the (narrow) grid tile.
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
                       IconButton(
+                        tooltip: 'Preimenuj datoteku',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                        icon: const Icon(Icons.edit_outlined, size: 16, color: SR.muted),
+                        onPressed: onRename,
+                      ),
+                      IconButton(
                         tooltip: 'Podijeli datoteku',
-                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
                         icon: const Icon(Icons.share_outlined, size: 16, color: SR.muted),
                         onPressed: onShare,
                       ),
                       IconButton(
                         tooltip: 'Obriši datoteku',
-                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
                         icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
                         onPressed: onDelete,
                       ),

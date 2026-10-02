@@ -277,6 +277,77 @@ void main() {
     expect(find.text('Plan.pdf'), findsNothing);
   });
 
+  testWidgets('1.17.0: renaming a file PATCHes /api/files/{id} from list and grid', (tester) async {
+    var files = <Map<String, dynamic>>[
+      {
+        'id': 42,
+        'name': 'Slika 2.10.2026.jpg',
+        'size': 12345,
+        'content_type': 'image/jpeg',
+        'uploaded_by': 'Branko',
+        'created_at': '2026-10-02T12:00:00Z',
+      },
+    ];
+    final patched = <String, dynamic>{};
+    final client = MockClient((req) async {
+      if (req.url.path == '/api/projects/7/files' && req.method == 'GET') {
+        return http.Response(jsonEncode(files), 200);
+      }
+      if (req.method == 'PATCH' && req.url.path.startsWith('/api/files/')) {
+        final body = jsonDecode(req.body) as Map<String, dynamic>;
+        patched[req.url.path] = body['name'];
+        files = [
+          for (final f in files)
+            if (f['id'] == int.parse(req.url.path.split('/').last))
+              {...f, 'name': body['name']}
+            else
+              f,
+        ];
+        return http.Response(jsonEncode({'id': 42, 'name': body['name']}), 200);
+      }
+      return http.Response('{"detail":"not found"}', 404);
+    });
+    final api = Api('https://x.test', token: 't', client: client);
+
+    await tester.pumpWidget(MaterialApp(home: _screen(api)));
+    await tester.pumpAndSettle();
+
+    // The dialog opens pre-filled with the current name.
+    await tester.tap(find.byTooltip('Preimenuj datoteku').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Novi naziv datoteke'), findsOneWidget);
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        'Slika 2.10.2026.jpg');
+
+    // Cancel (blank name) sends nothing.
+    await tester.enterText(find.byType(TextField), '   ');
+    await tester.tap(find.text('Spremi'));
+    await tester.pumpAndSettle();
+    expect(patched, isEmpty);
+
+    await tester.tap(find.byTooltip('Preimenuj datoteku').first);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Fasada gotova.jpg');
+    await tester.tap(find.text('Spremi'));
+    await tester.pumpAndSettle();
+
+    expect(patched, {'/api/files/42': 'Fasada gotova.jpg'});
+    expect(find.text('Fasada gotova.jpg'), findsOneWidget);
+    expect(find.text('Slika 2.10.2026.jpg'), findsNothing);
+
+    // The grid view exposes the same rename action.
+    await tester.tap(find.byIcon(Icons.grid_view_outlined));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Preimenuj datoteku'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Fasada 2.jpg');
+    await tester.tap(find.text('Spremi'));
+    await tester.pumpAndSettle();
+
+    expect(patched['/api/files/42'], 'Fasada 2.jpg');
+    expect(find.text('Fasada 2.jpg'), findsOneWidget);
+  });
+
   test('1.11.0: decodeImageDimensions returns image size', () {
     final dims = decodeImageDimensions(jpegBytes(w: 320, h: 240));
     expect(dims?.$1, 320);

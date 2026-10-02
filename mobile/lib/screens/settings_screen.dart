@@ -45,6 +45,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           .join(', '));
   late final TextEditingController _todoName = TextEditingController(
       text: (widget.session.settings['default_todo_list'] as String?) ?? 'Nabava');
+
+  /// 1.17.0: „Nabava grupa" — the users who receive the „🔔 Pošalji obavijest"
+  /// notify (web parity: Postavke → Nabava grupa). Loaded from settings and
+  /// edited member-by-member, saving after every add/remove like the web does.
+  late List<int> _nabavaGroup = [
+    for (final id in (widget.session.settings['nabava_group'] as List<dynamic>? ?? []))
+      (id as num).toInt(),
+  ];
+  bool _savingGroup = false;
+
   bool _checkingNtfy = false;
   String? _ntfyCheck;
   bool _testingPush = false; // 1.12.2: Google push diagnostic
@@ -65,6 +75,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadNotifState();
     Updater.currentVersion().then((v) {
       if (mounted) setState(() => _appVersion = v);
+    }).catchError((_) {
+      // No package-info plugin (tests, unsupported platform): keep the
+      // placeholder instead of surfacing an unhandled error.
     });
   }
 
@@ -304,6 +317,83 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  // ---- admin: Nabava grupa (1.17.0, web parity) -------------------------------
+
+  /// Members of the group, resolved to user records (unknown ids are dropped —
+  /// the backend already filters deleted users out on save).
+  List<Map<String, dynamic>> get _groupMembers => [
+        for (final u in _users)
+          if (_nabavaGroup.contains((u['id'] as num?)?.toInt())) u,
+      ];
+
+  Future<void> _addToNabavaGroup() async {
+    final members = _nabavaGroup.toSet();
+    final candidates = _users
+        .where((u) => !members.contains((u['id'] as num?)?.toInt()))
+        .toList();
+    if (candidates.isEmpty) {
+      _toast(Exception(_users.isEmpty
+          ? 'Nema dostupnih korisnika — dodajte ih u odjeljku Korisnici.'
+          : 'Svi su korisnici već u Nabava grupi.'));
+      return;
+    }
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: SR.panel,
+        title: const Text('Dodaj u Nabava grupu'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              for (final u in candidates)
+                ListTile(
+                  leading: const Icon(Icons.person_add_alt_1, color: SR.accent),
+                  title: Text(u['display_name'] as String? ?? ''),
+                  subtitle: Text('@${u['username']}',
+                      style: const TextStyle(color: SR.muted, fontSize: 12)),
+                  onTap: () => Navigator.pop(ctx, (u['id'] as num).toInt()),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Odustani')),
+        ],
+      ),
+    );
+    if (picked == null) return;
+    await _saveNabavaGroup([..._nabavaGroup, picked]);
+  }
+
+  Future<void> _removeFromNabavaGroup(int id) =>
+      _saveNabavaGroup([for (final x in _nabavaGroup) if (x != id) x]);
+
+  /// The web app PUTs the app name together with the group on every change
+  /// (the field is required by the API), so mirror that with the SAVED app
+  /// name — not with whatever is currently typed in the form above.
+  Future<void> _saveNabavaGroup(List<int> ids) async {
+    setState(() => _savingGroup = true);
+    try {
+      final settings = await api.put('/api/settings', {
+        'app_name': widget.session.appName,
+        'nabava_group': ids,
+      }) as Map<String, dynamic>;
+      final saved = [
+        for (final id in (settings['nabava_group'] as List<dynamic>? ?? []))
+          (id as num).toInt(),
+      ];
+      if (!mounted) return;
+      setState(() => _nabavaGroup = saved);
+      widget.onChanged();
+    } catch (e) {
+      _toast(e);
+    } finally {
+      if (mounted) setState(() => _savingGroup = false);
+    }
+  }
+
   // ---- admin: users ----------------------------------------------------------
 
   Future<void> _newUser() async {
@@ -374,6 +464,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // 1.17.0: the screen is pushed as a full route, so it needs its own
+    // Scaffold — without one it rendered as a bare (background-less) list with
+    // no title, no back button, and every SnackBar ("Postavke spremljene.")
+    // landed on the Home screen's Scaffold *behind* this page, invisible.
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      appBar: AppBar(title: const Text('Postavke')),
+      body: _body(),
+    );
+  }
+
+  Widget _body() {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -535,6 +637,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(height: 10),
                   FilledButton(onPressed: _saveAppSettings, child: const Text('Spremi postavke')),
+                ],
+              ),
+            ),
+          ),
+
+          // 1.17.0: „Nabava grupa" — recipients of the „Pošalji obavijest"
+          // notify. Web parity: Postavke → Nabava grupa.
+          _sectionTitle('Nabava grupa'),
+          Card(
+            key: const ValueKey('nabavaGroupCard'),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Korisnici koji primaju obavijest „Dodane nove stvari za nabavu" kad netko klikne '
+                    '„🔔 Pošalji obavijest" na Nabava popisu ili To-Do panelu ploče.',
+                    style: TextStyle(color: SR.muted, fontSize: 12),
+                  ),
+                  const SizedBox(height: 10),
+                  if (_groupMembers.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        'Grupa je prazna — nitko neće primiti obavijest dok ne dodate korisnike.',
+                        style: TextStyle(color: SR.muted, fontSize: 12),
+                      ),
+                    )
+                  else
+                    for (final u in _groupMembers)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.shopping_cart_outlined, color: SR.accent),
+                        title: Text(u['display_name'] as String? ?? ''),
+                        subtitle: Text(
+                          '@${u['username']}${u['id'] == me['id'] ? ' · to ste vi' : ''}',
+                          style: const TextStyle(color: SR.muted, fontSize: 12),
+                        ),
+                        trailing: IconButton(
+                          tooltip: 'Ukloni iz grupe',
+                          icon: const Icon(Icons.remove_circle_outline,
+                              color: Color(0xFFDC2626), size: 20),
+                          onPressed: _savingGroup
+                              ? null
+                              : () => _removeFromNabavaGroup((u['id'] as num).toInt()),
+                        ),
+                      ),
+                  const SizedBox(height: 4),
+                  OutlinedButton.icon(
+                    onPressed: (_savingGroup || _users.isEmpty) ? null : _addToNabavaGroup,
+                    icon: const Icon(Icons.person_add_alt_1, size: 18),
+                    label: const Text('Dodaj u grupu'),
+                  ),
                 ],
               ),
             ),

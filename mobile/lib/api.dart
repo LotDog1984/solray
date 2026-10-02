@@ -46,6 +46,43 @@ class Api {
     token = (jsonDecode(res.body) as Map<String, dynamic>)['access_token'] as String?;
   }
 
+  /// Public (no token): is first-user registration still open on this
+  /// instance? Web parity — the login screen uses it to offer registering
+  /// the very first account (the admin) on a brand-new server.
+  Future<bool> registrationOpen() async {
+    try {
+      final res = await _client
+          .get(_u('/api/auth/status'))
+          .timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return false;
+      final d = jsonDecode(res.body);
+      return d is Map && d['registration_open'] == true;
+    } catch (_) {
+      return false; // offline / old server / non-JSON — just show plain login
+    }
+  }
+
+  /// Public: register the FIRST user of the instance (becomes the admin) and
+  /// keep the returned token, exactly like the web's register form.
+  Future<void> register(
+      {required String username,
+      required String displayName,
+      required String password}) async {
+    final res = await _client
+        .post(_u('/api/auth/register'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'username': username,
+              'display_name': displayName,
+              'password': password,
+            }))
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode != 200) {
+      throw Exception(_detail(res.body) ?? 'Registracija nije uspjela (HTTP ${res.statusCode})');
+    }
+    token = (jsonDecode(res.body) as Map<String, dynamic>)['access_token'] as String?;
+  }
+
   Future<dynamic> get(String path, {Map<String, String>? query}) => _json('GET', path, query: query);
   Future<dynamic> post(String path, Object body) => _json('POST', path, body: body);
   Future<dynamic> patch(String path, Object body) => _json('PATCH', path, body: body);
