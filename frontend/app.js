@@ -2079,258 +2079,375 @@ async function renderNabava() {
 
 /* --------------------------------- settings -------------------------------- */
 
+/** Inline feedback inside a settings card (1.18.0 — replaces alert() popups). */
+function setSettingStatus(card, text, ok = true) {
+  const el = card ? card.querySelector(".setting-status") : null;
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle("bad", !ok);
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => {
+    el.textContent = "";
+  }, 4500);
+}
+
+/** One card of the 1.18.0 settings grid: icon, title, hint, body, status line. */
+function settingCard({ icon, title, hint = "", body = "", wide = false }) {
+  return `
+    <section class="panel setting-card${wide ? " wide" : ""}">
+      <header class="setting-head">
+        <span class="setting-icon" aria-hidden="true">${icon}</span>
+        <div>
+          <h2>${escapeHtml(title)}</h2>
+          ${hint ? `<p>${hint}</p>` : ""}
+        </div>
+      </header>
+      ${body}
+      <p class="setting-status"></p>
+    </section>`;
+}
+
 async function renderSettings() {
   const view = document.querySelector("#settingsView");
   if (!view) return;
   view.innerHTML = '<div class="panel">Učitavanje...</div>';
 
-  const adminSection = state.me?.is_admin
-    ? `
-      <div class="panel" style="margin-top:16px;">
-        <h2 style="margin-top:0;">Korisnici</h2>
-        <form id="createUserForm" class="row" style="margin-bottom:14px;">
-          <input name="username" placeholder="Korisničko ime" required />
-          <input name="display_name" placeholder="Prikazano ime" required />
-          <input name="password" type="password" placeholder="Lozinka (min. 8 znakova)" required />
-          <button type="submit">Dodaj korisnika</button>
-        </form>
-        <div class="files" id="userList"></div>
-      </div>`
-    : "";
+  const admin = !!state.me?.is_admin;
+  const users = state.users || [];
+  const group = (state.nabavaGroup || []).map(Number);
 
-  const appNameSection = state.me?.is_admin
-    ? `
-    <div class="panel">
-      <h2 style="margin-top:0;">Naziv aplikacije</h2>
+  /* Every settings write needs app_name (required by the API), so always send
+     the SAVED name — never whatever is currently typed in the form. */
+  const saveSettings = (patch) =>
+    api.json("/api/settings", "PUT", { app_name: state.appName || "Private Workspace", ...patch });
+
+  /** Re-read every settings value into state, then redraw the grid. */
+  const reloadSettings = async () => {
+    try {
+      const s = await api.json("/api/settings", "GET");
+      state.appName = s.app_name || state.appName;
+      state.defaultColumns = Array.isArray(s.default_columns) ? s.default_columns : state.defaultColumns;
+      state.defaultTodoListName = s.default_todo_list || state.defaultTodoListName;
+      state.nabavaGroup = Array.isArray(s.nabava_group) ? s.nabava_group.map(Number) : [];
+    } catch (error) {
+      /* keep what we have — the grid stays usable */
+    }
+    renderSettings();
+  };
+
+  const appNameCard = admin
+    ? settingCard({
+        icon: "✦",
+        title: "Naziv aplikacije",
+        hint: "Prikazuje se na stranici za prijavu i u vrhu aplikacije.",
+        body: `
       <form id="appNameForm" class="row">
-        <input name="app_name" placeholder="npr. SolRay Firm" value="${escapeHtml(state.appName || "")}" maxlength="80" required />
-        <button type="submit">Spremi naziv</button>
-      </form>
-      <p class="muted" style="font-size:13px;">Naziv se prikazuje na stranici za prijavu i u gornjem lijevom kutu aplikacije.</p>
-    </div>`
+        <input name="app_name" placeholder="npr. My Team Firme" value="${escapeHtml(state.appName || "")}" maxlength="80" required />
+        <button type="submit" class="primary">Spremi naziv</button>
+      </form>`,
+      })
     : "";
 
-  const columnsSection = state.me?.is_admin
-    ? `
-    <div class="panel">
-      <h2 style="margin-top:0;">Zadane kolone novih ploča</h2>
-      <form id="defaultColumnsForm" style="display:grid;gap:10px;">
-        <textarea name="columns" placeholder="Jedna kolona po retku..." style="min-height:110px;">${escapeHtml((state.defaultColumns || []).join("\n"))}</textarea>
-        <button type="submit">Spremi kolone</button>
-      </form>
-      <p class="muted" style="font-size:13px;">Svaka nova ploča automatski dobije ove kolone (jedan naziv po retku, najviše 20).</p>
-    </div>
-    <div class="panel">
-      <h2 style="margin-top:0;">Naziv To-Do popisa za nabavu</h2>
+  const columnsCard = admin
+    ? settingCard({
+        icon: "▦",
+        title: "Zadane kolone novih ploča",
+        hint: "Svaka nova ploča automatski dobije ove kolone. Kliknite naziv i uredite ga.",
+        wide: true,
+        body: `
+      <form id="defaultColumnsForm">
+        <button type="button" class="chip-add" id="addColumnChip">＋ Dodaj novu kolonu</button>
+        <div class="chip-list" id="columnChips"></div>
+        <div class="chip-hint"><span>Najviše 20 kolona · naziv do 80 znakova</span><span id="columnCount"></span></div>
+        <button type="submit" class="primary setting-save">Spremi kolone</button>
+      </form>`,
+      })
+    : "";
+
+  const todoCard = admin
+    ? settingCard({
+        icon: "🛒",
+        title: "Naziv To-Do popisa za nabavu",
+        hint: `To-Do popis na svakoj ploči i gumb u lijevoj traci (trenutno: „${escapeHtml(state.defaultTodoListName || "Nabava")}”).`,
+        body: `
       <form id="defaultTodoListForm" class="row">
         <input name="todo_name" placeholder="npr. Nabava" value="${escapeHtml(state.defaultTodoListName || "Nabava")}" maxlength="80" required />
-        <button type="submit">Spremi naziv</button>
-      </form>
-      <p class="muted" style="font-size:13px;">Ovaj naziv nosi To-Do popis na svakoj ploči i globalni gumb u lijevoj traci (trenutno: „${escapeHtml(state.defaultTodoListName || "Nabava")}"). Promjena vrijedi odmah za sve ploče.</p>
-    </div>
-    <!-- 1.16.0: Nabava grupa — primatelji "Pošalji obavijest" obavijesti -->
-    <div class="panel">
-      <h2 style="margin-top:0;">Nabava grupa</h2>
-      <p class="muted" style="font-size:13px;margin-top:0;">Korisnici koji primaju obavijest „Dodane nove stvari za nabavu” kad netko klikne „Pošalji obavijest” na Nabava popisu (gumb 🔔 na globalnom popisu i To-Do panelu svake ploče).</p>
-      <div id="nabavaGroupList" class="files" style="margin-bottom:12px;"></div>
+        <button type="submit" class="primary">Spremi naziv</button>
+      </form>`,
+      })
+    : "";
+
+  const groupCard = admin
+    ? settingCard({
+        icon: "🔔",
+        title: "Nabava grupa",
+        hint: "Korisnici koji primaju obavijest „Dodane nove stvari za nabavu” kad netko klikne „Pošalji obavijest” na Nabava popisu ili To-Do panelu ploče.",
+        wide: true,
+        body: `
+      <div id="nabavaGroupList" class="files"></div>
       <form id="nabavaGroupForm" class="row">
         <select name="user_id" required>
           <option value="">Dodaj korisnika u grupu…</option>
-          ${(state.users || [])
+          ${users
+            .filter((u) => !group.includes(u.id))
             .map((u) => `<option value="${u.id}">${escapeHtml(u.display_name || u.username)} (@${escapeHtml(u.username)})</option>`)
             .join("")}
         </select>
-        <button type="submit">Dodaj u grupu</button>
+        <button type="submit" class="primary">Dodaj u grupu</button>
+      </form>`,
+      })
+    : "";
+
+  const usersCard = admin
+    ? settingCard({
+        icon: "👥",
+        title: "Korisnici",
+        hint: "Novi članovi tima odmah se mogu prijaviti i na webu i u mobilnoj aplikaciji.",
+        wide: true,
+        body: `
+      <form id="createUserForm" class="row">
+        <input name="username" placeholder="Korisničko ime" required />
+        <input name="display_name" placeholder="Prikazano ime" required />
+        <input name="password" type="password" placeholder="Lozinka (min. 8 znakova)" required />
+        <button type="submit" class="primary">Dodaj korisnika</button>
       </form>
-    </div>`
+      <div class="files" id="userList"></div>`,
+      })
     : "";
 
   view.innerHTML = `
-    ${appNameSection}
-    ${columnsSection}
-    <div class="panel">
-      <h2 style="margin-top:0;">Moj ntfy topic</h2>
-      <form id="ntfyForm" class="row">
-        <input name="topic" placeholder="npr. branko-private-123" value="${escapeHtml(state.me?.ntfy_topic || "")}" />
-        <button type="submit">Spremi</button>
-        <button type="button" class="secondary" id="ntfyTest">Testiraj</button>
-      </form>
-      <p class="muted" style="font-size:13px;">Unesite isti topic i u ntfy aplikaciji na telefonu (npr. https://ntfy.sh/vas-topic) pa kliknite „Testiraj” — na telefon bi trebala stići obavijest.</p>
-      <div id="ntfyTestResult" class="muted" style="font-size:13px;"></div>
+    <div class="settings-head">
+      <div>
+        <h1>Postavke</h1>
+        <p>Naziv, kolone, nabava i korisnici — sve na jednom mjestu.</p>
+      </div>
+      <span class="settings-tag">${escapeHtml(state.appName || "")}</span>
     </div>
-    ${adminSection}
-  `;
+    <div class="settings-grid">
+      ${appNameCard}
+      ${columnsCard}
+      ${todoCard}
+      ${groupCard}
+      ${usersCard}
+      <section class="panel setting-card">
+        <header class="setting-head">
+          <span class="setting-icon" aria-hidden="true">📱</span>
+          <div>
+            <h2>Mobilna aplikacija</h2>
+            <p>Android aplikacija nudi iste mogućnosti kao web: ploče, Nabava, datoteke, pretraga i obavijesti — s istim postavkama i podacima.</p>
+          </div>
+        </header>
+        <a class="button-link" href="https://github.com/LotDog1984/solray/releases/latest" target="_blank" rel="noopener">Preuzmi najnoviji APK ↗</a>
+        <p class="setting-status"></p>
+      </section>
+    </div>`;
 
-  document.querySelector("#ntfyForm").onsubmit = async (event) => {
-    event.preventDefault();
-    const topic = new FormData(event.currentTarget).get("topic");
-    try {
-      state.me = await api.json("/api/me/ntfy", "PATCH", { topic: topic || null });
-      alert("Topic spremljen.");
-    } catch (error) {
-      alert(error.message);
-    }
-  };
-
-  document.querySelector("#ntfyTest").onclick = async () => {
-    const out = document.querySelector("#ntfyTestResult");
-    out.textContent = "Slanje...";
-    try {
-      const res = await api.json("/api/me/ntfy/test", "POST", {});
-      out.textContent = res.ok ? `✓ Poslano na topic „${res.topic}” — provjerite telefon.` : `✗ ${res.reason}`;
-    } catch (error) {
-      out.textContent = `✗ ${error.message}`;
-    }
-  };
-
+  // ---- Naziv aplikacije ------------------------------------------------------
   const appNameForm = document.querySelector("#appNameForm");
   if (appNameForm) {
     appNameForm.onsubmit = async (event) => {
       event.preventDefault();
-      const name = new FormData(event.currentTarget).get("app_name");
+      const card = appNameForm.closest(".setting-card");
+      const name = (new FormData(appNameForm).get("app_name") || "").trim();
       try {
-        const settings = await api.json("/api/settings", "PUT", { app_name: name });
+        const settings = await saveSettings({ app_name: name });
         state.appName = settings.app_name;
         applyAppName();
-        alert("Naziv spremljen.");
+        document.querySelector(".settings-tag").textContent = state.appName || "";
+        setSettingStatus(card, "✓ Naziv spremljen.");
       } catch (error) {
-        alert(error.message);
+        setSettingStatus(card, error.message, false);
       }
     };
   }
 
+  // ---- Zadane kolone: editable chips (1.18.0) --------------------------------
   const columnsForm = document.querySelector("#defaultColumnsForm");
   if (columnsForm) {
+    const card = columnsForm.closest(".setting-card");
+    const chips = document.querySelector("#columnChips");
+    const countEl = document.querySelector("#columnCount");
+    let values = [...(state.defaultColumns || [])];
+
+    const renderChips = () => {
+      chips.innerHTML = values.length
+        ? values
+            .map(
+              (name, i) => `
+        <div class="chip" data-index="${i}">
+          <span class="chip-index">${i + 1}</span>
+          <input value="${escapeHtml(name)}" maxlength="80" placeholder="Naziv kolone" aria-label="Naziv kolone ${i + 1}" />
+          <button type="button" class="chip-remove" title="Ukloni kolonu" aria-label="Ukloni kolonu">✕</button>
+        </div>`
+            )
+            .join("")
+        : '<div class="chip-empty">Još nema kolona — dodajte prvu.</div>';
+      countEl.textContent = `${values.length} / 20`;
+      chips.querySelectorAll(".chip").forEach((row) => {
+        const i = Number(row.dataset.index);
+        const field = row.querySelector("input");
+        field.oninput = () => {
+          values[i] = field.value;
+        };
+        field.onkeydown = (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            columnsForm.requestSubmit();
+          }
+        };
+        row.querySelector(".chip-remove").onclick = () => {
+          values.splice(i, 1);
+          renderChips();
+        };
+      });
+    };
+
+    /** Pull whatever is typed in the DOM back into `values` (indexes move). */
+    const readChips = () => {
+      chips.querySelectorAll(".chip").forEach((row) => {
+        values[Number(row.dataset.index)] = row.querySelector("input").value;
+      });
+      return values;
+    };
+
+    const addChip = () => {
+      if (readChips().length >= 20) {
+        setSettingStatus(card, "Najviše 20 kolona.", false);
+        return;
+      }
+      values.push("");
+      renderChips();
+      const last = chips.querySelector(".chip:last-child input");
+      if (last) last.focus();
+      setSettingStatus(card, "");
+    };
+
+    document.querySelector("#addColumnChip").onclick = addChip;
+    chips.onclick = (event) => {
+      if (event.target.closest(".chip-empty")) addChip();
+    };
+
     columnsForm.onsubmit = async (event) => {
       event.preventDefault();
-      const raw = new FormData(event.currentTarget).get("columns") || "";
-      const names = raw.split("\n").map((line) => line.trim()).filter(Boolean);
+      const names = readChips()
+        .map((n) => (n || "").trim())
+        .filter(Boolean);
+      if (!names.length) {
+        setSettingStatus(card, "Potrebna je barem jedna kolona.", false);
+        return;
+      }
       try {
-        const settings = await api.json("/api/settings", "PUT", {
-          app_name: state.appName || "Private Workspace",
-          default_columns: names,
-        });
-        state.defaultColumns = settings.default_columns;
-        alert("Kolone spremljene. Nove ploče koristit će ove kolone.");
+        const settings = await saveSettings({ default_columns: names });
+        state.defaultColumns = Array.isArray(settings.default_columns) ? settings.default_columns : names;
+        values = [...state.defaultColumns];
+        renderChips();
+        setSettingStatus(card, "✓ Kolone spremljene — nove ploče koriste ovaj popis.");
       } catch (error) {
-        alert(error.message);
+        setSettingStatus(card, error.message, false);
       }
     };
+
+    renderChips();
   }
 
+  // ---- Naziv To-Do popisa za nabavu ------------------------------------------
   const todoListForm = document.querySelector("#defaultTodoListForm");
   if (todoListForm) {
     todoListForm.onsubmit = async (event) => {
       event.preventDefault();
-      const todoName = (new FormData(event.currentTarget).get("todo_name") || "").trim();
+      const todoName = (new FormData(todoListForm).get("todo_name") || "").trim();
       try {
-        const settings = await api.json("/api/settings", "PUT", {
-          app_name: state.appName || "Private Workspace",
-          default_todo_list: todoName,
-        });
+        const settings = await saveSettings({ default_todo_list: todoName });
         state.defaultTodoListName = settings.default_todo_list;
-        alert("Naziv popisa spremljen. Vrijedi za sve ploče i globalni pregled.");
         renderSettings();
       } catch (error) {
-        alert(error.message);
+        setSettingStatus(todoListForm.closest(".setting-card"), error.message, false);
       }
     };
   }
 
-  // 1.16.0: Nabava group management (admin) — render + add/remove.
+  // ---- Nabava grupa (1.16.0) -------------------------------------------------
   const groupList = document.querySelector("#nabavaGroupList");
   if (groupList) {
-    const renderGroup = () => {
-      const members = (state.users || []).filter((u) => (state.nabavaGroup || []).includes(u.id));
-      groupList.innerHTML = members.length
-        ? members
-            .map(
-              (u) => `
-          <div class="file-item">
-            <strong>${escapeHtml(u.display_name || u.username)}</strong>
-            <small class="muted">@${escapeHtml(u.username)}${u.id === state.me?.id ? " · to ste vi" : ""}</small>
-            <button class="danger remove-group-user" data-id="${u.id}">Ukloni</button>
-          </div>`
-            )
-            .join("")
-        : '<small class="muted">Grupa je prazna — nitko neće primiti obavijest dok ne dodate korisnike.</small>';
-      groupList.querySelectorAll(".remove-group-user").forEach((btn) => {
-        btn.onclick = async () => {
-          state.nabavaGroup = (state.nabavaGroup || []).filter((id) => id !== Number(btn.dataset.id));
-          await saveNabavaGroup();
-        };
-      });
-    };
-    const saveNabavaGroup = async () => {
+    const card = groupList.closest(".setting-card");
+    const members = users.filter((u) => group.includes(u.id));
+    groupList.innerHTML = members.length
+      ? members
+          .map(
+            (u) => `
+        <div class="file-item">
+          <strong>${escapeHtml(u.display_name || u.username)}</strong>
+          <small class="muted">@${escapeHtml(u.username)}${u.id === state.me?.id ? " · to ste vi" : ""}</small>
+          <button class="danger remove-group-user" data-id="${u.id}">Ukloni</button>
+        </div>`
+          )
+          .join("")
+      : '<small class="muted">Grupa je prazna — nitko neće primiti obavijest dok ne dodate korisnike.</small>';
+
+    const saveNabavaGroup = async (ids) => {
       try {
-        const settings = await api.json("/api/settings", "PUT", {
-          app_name: state.appName || "Private Workspace",
-          nabava_group: state.nabavaGroup || [],
-        });
+        const settings = await saveSettings({ nabava_group: ids });
         state.nabavaGroup = Array.isArray(settings.nabava_group) ? settings.nabava_group.map(Number) : [];
-        renderGroup();
+        renderSettings();
       } catch (error) {
-        alert(error.message);
-        renderGroup();
+        setSettingStatus(card, error.message, false);
       }
     };
-    renderGroup();
+
+    groupList.querySelectorAll(".remove-group-user").forEach((btn) => {
+      btn.onclick = () => saveNabavaGroup(group.filter((id) => id !== Number(btn.dataset.id)));
+    });
+
     const groupForm = document.querySelector("#nabavaGroupForm");
     if (groupForm) {
       groupForm.onsubmit = async (event) => {
         event.preventDefault();
         const uid = Number(new FormData(groupForm).get("user_id"));
         if (!uid) return;
-        if (!(state.nabavaGroup || []).includes(uid)) state.nabavaGroup = [...(state.nabavaGroup || []), uid];
-        groupForm.reset();
-        await saveNabavaGroup();
+        await saveNabavaGroup(group.includes(uid) ? group : [...group, uid]);
       };
     }
   }
 
-  if (state.me?.is_admin) {
+  // ---- Korisnici -------------------------------------------------------------
+  if (admin) {
     const list = document.querySelector("#userList");
-    const renderList = (users) => {
-      list.innerHTML = users
-        .map(
-          (u) => `
-          <div class="file-item">
-            <strong>${escapeHtml(u.display_name || u.username)}</strong>
-            <small class="muted">@${escapeHtml(u.username)}${u.is_admin ? " · admin" : ""}</small>
-            ${
-              u.id === state.me.id
-                ? '<small class="muted">to ste vi</small>'
-                : `<button class="danger delete-user" data-id="${u.id}">Obriši</button>`
-            }
-          </div>`
-        )
-        .join("");
-      list.querySelectorAll(".delete-user").forEach((btn) => {
-        btn.onclick = async () => {
-          if (!confirm("Obrisati ovog korisnika?")) return;
-          try {
-            await api.request(`/api/users/${btn.dataset.id}`, { method: "DELETE" });
-            state.users = await api.json("/api/users", "GET");
-            renderList(state.users);
-          } catch (error) {
-            alert(error.message);
-          }
-        };
-      });
-    };
-    renderList(state.users);
+    list.innerHTML = users
+      .map(
+        (u) => `
+        <div class="file-item">
+          <strong>${escapeHtml(u.display_name || u.username)}</strong>
+          <small class="muted">@${escapeHtml(u.username)}${u.is_admin ? " · admin" : ""}</small>
+          ${u.id === state.me.id ? '<small class="muted">to ste vi</small>' : `<button class="danger delete-user" data-id="${u.id}">Obriši</button>`}
+        </div>`
+      )
+      .join("");
+
+    list.querySelectorAll(".delete-user").forEach((btn) => {
+      btn.onclick = async () => {
+        const card = list.closest(".setting-card");
+        if (!confirm("Obrisati ovog korisnika? Njegovi zadaci ostaju, ali bez dodjele.")) return;
+        try {
+          await api.request(`/api/users/${btn.dataset.id}`, { method: "DELETE" });
+          state.users = await api.json("/api/users", "GET");
+          await reloadSettings();
+        } catch (error) {
+          setSettingStatus(card, error.message, false);
+        }
+      };
+    });
 
     document.querySelector("#createUserForm").onsubmit = async (event) => {
       event.preventDefault();
       const form = event.currentTarget; // capture now — it's nulled after any await
+      const card = form.closest(".setting-card");
       const payload = formData(form);
       try {
         await api.json("/api/users", "POST", payload);
         state.users = await api.json("/api/users", "GET");
-        form.reset();
-        renderList(state.users);
+        await reloadSettings();
       } catch (error) {
-        alert(error.message);
+        setSettingStatus(card, error.message, false);
       }
     };
   }

@@ -1836,3 +1836,51 @@ span.nabava-origin {
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { scroll-behavior:auto !important; transition:none !important; animation:none !important; }
 }
+
+/* ============================================================================
+   1.18.0 — modern Postavke: card grid, icon headers, editable column chips
+   ========================================================================== */
+.settings-head { display:flex; align-items:flex-end; gap:14px; margin:2px 3px 16px; }
+.settings-head h1 { font-size:22px; line-height:1.1; letter-spacing:-.021em; }
+.settings-head p { margin-top:6px; color:var(--muted); font-size:12.5px; }
+.settings-head .settings-tag { margin-left:auto; flex:none; padding:6px 11px; border:1px solid var(--line); border-radius:999px; background:rgba(255,255,255,.05); color:var(--muted); font:10px "JetBrains Mono",ui-monospace,monospace; letter-spacing:.06em; text-transform:uppercase; }
+
+.settings-grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); align-items:start; }
+.setting-card { display:flex; flex-direction:column; gap:13px; padding:17px 18px 18px; }
+.setting-card.wide { grid-column:1 / -1; }
+.setting-head { display:flex; align-items:flex-start; gap:12px; }
+.setting-icon { width:38px; height:38px; flex:none; display:grid; place-items:center; border-radius:12px; background:linear-gradient(140deg,rgba(139,123,255,.92),rgba(62,168,242,.72)); color:#0b0d1c; font-size:17px; box-shadow:0 7px 18px rgba(109,92,246,.26); }
+.setting-head h2 { margin:0; font-size:14.5px; font-weight:700; letter-spacing:-.005em; }
+.setting-head p { margin:4px 0 0; color:var(--muted); font-size:12px; line-height:1.5; }
+.setting-card form { display:grid; gap:10px; margin:0; }
+.setting-card .row { gap:9px; }
+.setting-card input, .setting-card select { min-height:42px; }
+.setting-status { min-height:15px; margin:0; color:var(--ok); font-size:12px; }
+.setting-status.bad { color:var(--danger); }
+.setting-save { min-height:44px; border-radius:14px; font-size:13px; }
+
+/* Editable column chips (Zadane kolone) — stack of pills + add button */
+.chip-list { display:grid; gap:9px; }
+.chip { display:flex; align-items:center; gap:6px; padding:5px 7px; border:1px solid var(--line); border-radius:15px; background:rgba(8,10,24,.4); transition:border-color .16s ease, background .16s ease; }
+.chip:hover { border-color:var(--line-hi); background:rgba(8,10,24,.55); }
+.chip:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px rgba(139,123,255,.16); }
+.chip .chip-index { width:20px; flex:none; text-align:center; color:var(--muted-2); font:700 10px "JetBrains Mono",ui-monospace,monospace; }
+.chip input { flex:1; min-width:0; min-height:36px; padding:0 4px; border:0; border-radius:0; background:transparent; box-shadow:none; color:var(--text); font-size:13px; }
+.chip input:focus { outline:none; border:0; box-shadow:none; }
+.chip .chip-remove { width:32px; min-width:32px; min-height:32px; height:32px; padding:0; border-radius:11px; background:rgba(255,255,255,.05); color:var(--muted); font-size:13px; }
+.chip .chip-remove:hover { background:rgba(220,38,38,.25); color:#fecaca; box-shadow:none; }
+.chip-add { display:grid; place-items:center; min-height:46px; padding:0 12px; border:1px dashed var(--line-hi); border-radius:15px; background:rgba(255,255,255,.028); color:var(--muted); font-size:12.5px; font-weight:600; letter-spacing:.01em; }
+.chip-add:hover { border-color:var(--accent); color:var(--text); background:rgba(139,123,255,.1); }
+.chip-empty { padding:14px; border:1px dashed var(--line); border-radius:15px; color:var(--muted); font-size:12px; text-align:center; }
+.chip-hint { display:flex; align-items:center; justify-content:space-between; gap:10px; color:var(--muted-2); font-size:11.5px; }
+.button-link { display:grid; place-items:center; min-height:44px; padding:0 14px; border:1px solid var(--line); border-radius:14px; background:rgba(255,255,255,.05); color:var(--text); font-size:13px; font-weight:600; text-decoration:none; transition:background .16s ease, border-color .16s ease; }
+.button-link:hover { background:linear-gradient(120deg,rgba(139,123,255,.25),rgba(62,168,242,.18)); border-color:var(--line-hi); }
+
+@media (max-width: 560px) {
+  .settings-head { flex-wrap:wrap; align-items:flex-start; }
+  .settings-head .settings-tag { order:-1; }
+  .settings-grid { grid-template-columns:1fr; }
+  .setting-card { padding:15px 14px 16px; }
+  .setting-card input, .setting-card select { min-height:46px; font-size:16px; } /* 16px: iOS zoom */
+  .chip input { font-size:16px; }
+}

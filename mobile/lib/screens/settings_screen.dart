@@ -1,9 +1,7 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../api.dart';
 import '../services/notifications.dart';
@@ -14,8 +12,14 @@ import 'login_screen.dart';
 import 'onboarding_screen.dart';
 
 /// Postavke — everything the web app offers:
-/// account (logout, change server), notifications (ntfy topic + test),
-/// admin (app name, default columns, users).
+/// account (logout, change server), device notifications (system switch,
+/// Google push test, in-app updates) and, for admins, the app settings:
+/// name, default columns (editable chip list, 1.18.0), the Nabava To-Do list
+/// name, the Nabava group and the user list.
+///
+/// 1.18.0: the old ntfy-topic editor is gone — Google push (FCM) and web push
+/// cover both clients, so the topic field was noise. The stored topic keeps
+/// working server-side; only the editor was removed.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key, required this.session, required this.onChanged});
 
@@ -36,13 +40,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _notifOn = false;
   bool _notifPerm = true;
 
-  late final TextEditingController _topic =
-      TextEditingController(text: me['ntfy_topic'] as String? ?? '');
   late final TextEditingController _appName =
       TextEditingController(text: widget.session.appName);
-  late final TextEditingController _columns = TextEditingController(
-      text: (widget.session.settings['default_columns'] as List<dynamic>? ?? [])
-          .join(', '));
   late final TextEditingController _todoName = TextEditingController(
       text: (widget.session.settings['default_todo_list'] as String?) ?? 'Nabava');
 
@@ -55,8 +54,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ];
   bool _savingGroup = false;
 
-  bool _checkingNtfy = false;
-  String? _ntfyCheck;
+  /// 1.18.0: the default columns are edited as a list of chips (one text field
+  /// per column, add/remove buttons) — the old comma-separated field was the
+  /// last "old school" part of Postavke.
+  late final List<TextEditingController> _columnCtrls = [
+    for (final c in (widget.session.settings['default_columns'] as List<dynamic>? ?? []))
+      TextEditingController(text: c.toString()),
+  ];
+
   bool _testingPush = false; // 1.12.2: Google push diagnostic
   String? _pushCheck;
 
@@ -117,6 +122,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) setState(() => _notifOn = v);
   }
 
+  @override
+  void dispose() {
+    _appName.dispose();
+    _todoName.dispose();
+    for (final c in _columnCtrls) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  // ---- admin: default column chips (1.18.0) ----------------------------------
+
+  void _addColumn() {
+    if (_columnCtrls.length >= 20) {
+      _toast(Exception('Najviše 20 kolona.'));
+      return;
+    }
+    setState(() => _columnCtrls.add(TextEditingController()));
+  }
+
+  void _removeColumn(int index) {
+    final gone = _columnCtrls[index];
+    setState(() => _columnCtrls.removeAt(index));
+    // Dispose after the frame that detaches the field (disposing earlier
+    // would tear the controller out from under a still-mounted TextField).
+    WidgetsBinding.instance.addPostFrameCallback((_) => gone.dispose());
+  }
+
+  /// The names actually saved: trimmed, blanks dropped (same rule as the API).
+  List<String> get _columnNames => [
+        for (final c in _columnCtrls)
+          if (c.text.trim().isNotEmpty) c.text.trim(),
+      ];
+
   Future<void> _loadUsers() async {
     try {
       final users = await api.get('/api/users') as List<dynamic>;
@@ -135,63 +174,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // ---- notifications -------------------------------------------------------
-
-  Future<void> _saveTopic() async {
-    try {
-      await api.patch('/api/me/ntfy', {'topic': _topic.text.trim()});
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Topic spremljen.')));
-      widget.onChanged();
-    } catch (e) {
-      _toast(e);
-    }
-  }
-
-  /// Diagnose the SolRay→ntfy connection used for in-app notifications.
-  Future<void> _checkNtfyConnection() async {
-    final base = widget.session.ntfyBase;
-    final topic = me['ntfy_topic'] as String? ?? '';
-    setState(() {
-      _checkingNtfy = true;
-      _ntfyCheck = null;
-    });
-    if (base.isEmpty) {
-      setState(() {
-        _checkingNtfy = false;
-        _ntfyCheck = '⚠️ Server nije postavio javnu ntfy adresu. Admin: dodajte NTFY_PUBLIC_URL u backend okruženje (compose) i pokrenite stack ponovno.';
-      });
-      return;
-    }
-    if (topic.isEmpty) {
-      setState(() {
-        _checkingNtfy = false;
-        _ntfyCheck = '⚠️ Prvo spremite svoj ntfy topic.';
-      });
-      return;
-    }
-    WebSocketChannel? ch;
-    try {
-      final ws = base.replaceFirst(RegExp('^http'), 'ws');
-      ch = WebSocketChannel.connect(Uri.parse('$ws/$topic/ws'));
-      final msg = await ch.stream.first.timeout(const Duration(seconds: 8));
-      final d = jsonDecode(msg.toString());
-      if (d is Map && d['event'] == 'open') {
-        _ntfyCheck = '✅ Povezano ($base) — obavijesti dolaze dok je aplikacija otvorena ili u pozadini.';
-      } else {
-        _ntfyCheck = '⚠️ Neočekivani odgovor od ntfy-a.';
-      }
-      await ch.sink.close();
-    } catch (_) {
-      _ntfyCheck = '❌ Nema veze s $base. Provjerite NTFY_PUBLIC_URL i proxy (WebSocket mora biti dozvoljen).';
-      try {
-        await ch?.sink.close();
-      } catch (_) {}
-    }
-    if (mounted) {
-      setState(() => _checkingNtfy = false);
-    }
-  }
 
   /// 1.12.2: end-to-end Google push test — asks the server to send a real
   /// FCM message to THIS account's registered device and shows the exact
@@ -282,30 +264,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _testNtfy() async {
-    try {
-      final d = await api.post('/api/me/ntfy/test', {}) as Map<String, dynamic>;
-      if (!mounted) return;
-      final ok = d['ok'] as bool? ?? false;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(ok ? 'Testna obavijest poslana — provjerite telefon.' : (d['reason'] as String? ?? 'Neuspjelo')),
-      ));
-    } catch (e) {
-      _toast(e);
-    }
-  }
-
   // ---- admin: app settings --------------------------------------------------
 
   Future<void> _saveAppSettings() async {
+    if (_columnNames.isEmpty) {
+      _toast(Exception('Potrebna je barem jedna kolona.'));
+      return;
+    }
     try {
-      final columns = [
-        for (final c in _columns.text.split(','))
-          if (c.trim().isNotEmpty) c.trim(),
-      ];
       await api.put('/api/settings', {
         'app_name': _appName.text.trim(),
-        'default_columns': columns,
+        'default_columns': _columnNames,
         'default_todo_list': _todoName.text.trim(),
       });
       if (!mounted) return;
@@ -479,7 +448,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _sectionTitle('Račun'),
+        _sectionTitle('Račun', icon: '👤'),
         Card(
           child: ListTile(
             leading: const Icon(Icons.person, color: SR.accent),
@@ -522,7 +491,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ],
         ),
 
-        _sectionTitle('Obavijesti na uređaju'),
+        _sectionTitle('Obavijesti na uređaju', icon: '🔔'),
         Card(
           child: SwitchListTile(
             value: _notifOn,
@@ -571,60 +540,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ),
 
-        _sectionTitle('Obavijesti (ntfy)'),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              children: [
-                TextField(
-                  controller: _topic,
-                  decoration: const InputDecoration(labelText: 'Vaš ntfy topic'),
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(onPressed: _saveTopic, child: const Text('Spremi topic')),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: FilledButton(onPressed: _testNtfy, child: const Text('Testiraj')),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: _checkingNtfy ? null : _checkNtfyConnection,
-                  icon: const Icon(Icons.wifi_tethering),
-                  label: const Text('Provjeri vezu'),
-                ),
-                if (_ntfyCheck != null) ...[
-                  const SizedBox(height: 8),
-                  Text(_ntfyCheck!, style: Theme.of(context).textTheme.bodySmall),
-                ],
-              ],
-            ),
-          ),
-        ),
-
         if (isAdmin) ...[
-          _sectionTitle('Postavke aplikacije'),
+          _sectionTitle('Postavke aplikacije', icon: '⚙️'),
           Card(
             child: Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(14),
               child: Column(
                 children: [
                   TextField(
                     controller: _appName,
-                    decoration: const InputDecoration(labelText: 'Naziv aplikacije'),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _columns,
                     decoration: const InputDecoration(
-                      labelText: 'Zadane kolone (odvojene zarezom)',
-                      hintText: 'Backlog, U tijeku, Gotovo',
+                      labelText: 'Naziv aplikacije',
+                      helperText: 'Prikazuje se na prijavi i u vrhu aplikacije.',
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -633,18 +560,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     decoration: const InputDecoration(
                       labelText: 'Naziv To-Do popisa za nabavu',
                       hintText: 'Nabava',
+                      helperText: 'To-Do popis na svakoj ploči i gumb u donjoj traci.',
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  FilledButton(onPressed: _saveAppSettings, child: const Text('Spremi postavke')),
                 ],
               ),
             ),
           ),
 
+          // 1.18.0: „Zadane kolone" as an editable chip list (was one
+          // comma-separated field) — the same editor the web app now has.
+          _sectionTitle('Zadane kolone novih ploča', icon: '▦'),
+          Card(
+            key: const ValueKey('columnEditorCard'),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _columnCtrls.length >= 20 ? null : _addColumn,
+                    icon: const Icon(Icons.add, size: 18),
+                    label: const Text('Dodaj novu kolonu'),
+                  ),
+                  const SizedBox(height: 12),
+                  if (_columnCtrls.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 10),
+                      child: Text(
+                        'Još nema kolona — dodajte prvu.',
+                        style: TextStyle(color: SR.muted, fontSize: 12),
+                      ),
+                    )
+                  else
+                    for (var i = 0; i < _columnCtrls.length; i++) _columnRow(i, _columnCtrls[i]),
+                  Text(
+                    'Najviše 20 kolona · naziv do 80 znakova · ${_columnCtrls.length} / 20',
+                    style: const TextStyle(color: SR.muted, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          FilledButton.icon(
+            onPressed: _saveAppSettings,
+            icon: const Icon(Icons.save_outlined, size: 18),
+            label: const Text('Spremi postavke'),
+          ),
+
           // 1.17.0: „Nabava grupa" — recipients of the „Pošalji obavijest"
           // notify. Web parity: Postavke → Nabava grupa.
-          _sectionTitle('Nabava grupa'),
+          _sectionTitle('Nabava grupa', icon: '🛒'),
           Card(
             key: const ValueKey('nabavaGroupCard'),
             child: Padding(
@@ -696,7 +663,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
-          _sectionTitle('Korisnici'),
+          _sectionTitle('Korisnici', icon: '👥'),
           for (final u in _users)
             Card(
               margin: const EdgeInsets.only(bottom: 8),
@@ -739,7 +706,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('Ažuriranja'),
+        _sectionTitle('Ažuriranja', icon: '⬆️'),
         Card(
           child: Padding(
             padding: const EdgeInsets.all(12),
@@ -795,8 +762,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _sectionTitle(String t) => Padding(
-        padding: const EdgeInsets.only(top: 20, bottom: 8),
-        child: Text(t, style: const TextStyle(color: SR.muted, fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 1.2)),
+  /// One editable column: index, name field, remove button (1.18.0).
+  Widget _columnRow(int index, TextEditingController ctrl) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(left: 4, right: 2),
+      decoration: BoxDecoration(
+        color: SR.panelDeep,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: SR.line),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 22,
+            child: Text(
+              '${index + 1}',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: SR.muted, fontSize: 11, fontWeight: FontWeight.w700),
+            ),
+          ),
+          Expanded(
+            child: TextField(
+              controller: ctrl,
+              textInputAction: TextInputAction.next,
+              decoration: const InputDecoration(
+                hintText: 'Naziv kolone',
+                border: InputBorder.none,
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Ukloni kolonu',
+            icon: const Icon(Icons.remove_circle_outline, color: Color(0xFFDC2626), size: 20),
+            onPressed: _columnCtrls.length <= 1 ? null : () => _removeColumn(index),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Section header: emoji badge + label (1.18.0 — matches the web grid).
+  Widget _sectionTitle(String t, {String? icon}) => Padding(
+        padding: const EdgeInsets.only(top: 22, bottom: 8),
+        child: Row(
+          children: [
+            if (icon != null) ...[
+              Text(icon, style: const TextStyle(fontSize: 14)),
+              const SizedBox(width: 8),
+            ],
+            Text(
+              t,
+              style: const TextStyle(color: SR.muted, fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 1.2),
+            ),
+          ],
+        ),
       );
 }
