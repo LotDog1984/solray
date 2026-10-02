@@ -113,6 +113,27 @@ class _NabavaTabState extends State<NabavaTab> {
     await Share.share(text, subject: subject);
   }
 
+  /// 1.16.0: "Pošalji obavijest" — notify every user in the Nabava group
+  /// (managed by the admin in web Postavke) that there are new items on the
+  /// list. The server fans out in-app + FCM/ntfy + web push and reports how
+  /// many users were reached; an empty group returns an honest reason.
+  Future<void> _sendNotify() async {
+    try {
+      final res = await widget.api.post('/api/nabava/notify', <String, dynamic>{})
+          as Map<String, dynamic>;
+      if (!mounted) return;
+      final ok = res['ok'] as bool? ?? false;
+      final notified = res['notified'] as int? ?? 0;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ok
+            ? '✓ Obavijest poslana $notified korisniku/cima.'
+            : (res['reason'] as String? ?? 'Slanje nije uspjelo.')),
+      ));
+    } catch (err) {
+      _showError(err);
+    }
+  }
+
   /// 1.10.0: housekeeping — delete every checked Stavka from ALL lists.
   Future<void> _clearChecked() async {
     final ok = await showDialog<bool>(
@@ -246,6 +267,17 @@ class _NabavaTabState extends State<NabavaTab> {
             onPressed: _addManual,
             icon: const Icon(Icons.add),
             label: const Text('Dodaj stavku ručno'),
+          ),
+          const SizedBox(height: 8),
+          // 1.16.0: yellow bell — notify the Nabava group about new items.
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFFACC15),
+              foregroundColor: const Color(0xFF231A00),
+            ),
+            onPressed: _entries.any((e) => !(e['is_done'] as bool? ?? false)) ? _sendNotify : null,
+            icon: const Icon(Icons.notifications_active, size: 18),
+            label: const Text('Pošalji obavijest'),
           ),
           const SizedBox(height: 8),
           Row(

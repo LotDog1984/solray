@@ -71,7 +71,7 @@ XFile _photo(Uint8List bytes) =>
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  group('defaultPhotoName (1.14.1)', () {
+  group('defaultPhotoName (1.14.1, fallback since 1.16.0)', () {
     test('keeps a meaningful gallery file name, forcing .jpg', () {
       expect(defaultPhotoName('uzu_luka_2026.jpeg'), 'uzu_luka_2026.jpg');
       expect(defaultPhotoName('vacation.PNG'), 'vacation.jpg');
@@ -99,6 +99,36 @@ void main() {
 
   testWidgets('gallery pick flows to the naming dialog and uploads as image/jpeg',
       (tester) async {
+    String? uploadedName;
+    String? uploadedType;
+    final api = _api((name, type, bytes) {
+      uploadedName = name;
+      uploadedType = type;
+    });
+
+    await tester.pumpWidget(MaterialApp(
+      home: _screen(api, galleryPicker: () async => _photo(jpegBytes())),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Galerija'));
+    await tester.pumpAndSettle();
+
+    // 1.16.0: the name dialog starts BLANK — no default to delete by hand.
+    expect(find.text('Naziv fotografije'), findsOneWidget);
+    final field = tester.widget<TextField>(find.byType(TextField).last);
+    expect(field.controller!.text, isEmpty);
+
+    // Saving with an empty field falls back to the automatic date name.
+    final now = DateTime.now();
+    await tester.tap(find.text('Spremi'));
+    await tester.pumpAndSettle();
+    expect(uploadedName, 'Slika ${now.day}.${now.month}.${now.year}.jpg');
+    expect(uploadedType, contains('image/jpeg'));
+  });
+
+  testWidgets('1.16.0: typed name is used verbatim (with .jpg forced)',
+      (tester) async {
     Uint8List? uploaded;
     String? uploadedName;
     String? uploadedType;
@@ -115,12 +145,6 @@ void main() {
 
     await tester.tap(find.text('Galerija'));
     await tester.pumpAndSettle();
-
-    // Nameless in-memory pick → date default prefill (matches camera flow).
-    final now = DateTime.now();
-    expect(find.text('Naziv fotografije'), findsOneWidget);
-    expect(find.text('Slika ${now.day}.${now.month}.${now.year}.jpg'), findsOneWidget);
-
     await tester.enterText(find.byType(TextField).last, 'uz luka');
     await tester.tap(find.text('Spremi'));
     await tester.pumpAndSettle();

@@ -379,6 +379,12 @@ class NabavaItemIn(BaseModel):
     is_done: bool | None = None
 
 
+class FileRenameIn(BaseModel):
+    """1.16.0: renaming an uploaded file (display name only)."""
+
+    name: str
+
+
 class NtfyIn(BaseModel):
     topic: str | None = None
 
@@ -434,6 +440,9 @@ DEFAULT_COLUMNS = ["Backlog", "U tijeku", "Gotovo"]
 # 1.7.0: label for the per-board supplies To-Do list and the global "Nabava" view.
 DEFAULT_TODO_LIST_KEY = "default_todo_list"
 DEFAULT_TODO_LIST_NAME = "Nabava"
+# 1.16.0: Nabava group — comma-separated user IDs that the "Pošalji obavijest"
+# button on the Nabava lists notifies about new shopping items.
+NABAVA_GROUP_KEY = "nabava_group"
 
 
 class SettingsOut(BaseModel):
@@ -445,12 +454,16 @@ class SettingsOut(BaseModel):
     # Mobile clients read this to open the notification WebSocket; empty = not configured.
     # FROZEN CONTRACT: fields may only be added (optional), never renamed/removed.
     ntfy_base_url: str = ""
+    # 1.16.0: users in the "Nabava group" — recipients of the
+    # "Pošalji obavijest" button on the Nabava lists.
+    nabava_group: list[int] = []
 
 
 class SettingsIn(BaseModel):
     app_name: str
     default_columns: list[str] | None = None
     default_todo_list: str | None = None
+    nabava_group: list[int] | None = None
 
 
 def get_default_columns(db: Session) -> list[str]:
@@ -466,6 +479,31 @@ def get_default_todo_list_name(db: Session) -> str:
     if raw and raw.strip():
         return raw.strip()[:80]
     return DEFAULT_TODO_LIST_NAME
+
+
+def get_nabava_group(db: Session) -> list[int]:
+    """1.16.0: user IDs in the Nabava group — recipients of the
+    'Pošalji obavijest' button on the Nabava lists. Stored as a
+    comma-separated Setting (same pattern as VAPID keys / app name)."""
+    raw = get_setting(db, NABAVA_GROUP_KEY)
+    if not raw:
+        return []
+    ids: list[int] = []
+    for part in raw.split(","):
+        try:
+            ids.append(int(part.strip()))
+        except ValueError:
+            continue
+    return ids
+
+
+def set_nabava_group(db: Session, ids: list[int]) -> None:
+    row = db.get(Setting, NABAVA_GROUP_KEY)
+    value = ",".join(str(i) for i in ids)
+    if row:
+        row.value = value
+    else:
+        db.add(Setting(key=NABAVA_GROUP_KEY, value=value))
 
 
 def db_session():
@@ -808,6 +846,32 @@ def notify_task_users(db: Session, actor: User, task: Task) -> None:
         send_webpush(db, user, app_title(db), message, board_id=board_id)
 
 
+def notify_nabava_group(db: Session, actor: User, count: int) -> int:
+    """1.16.0: push "Dodane nove stvari za nabavu" to every user in the
+    Nabava group (admin-managed in Postavke). Same channel discipline as
+    notify_task_users: one in-app Notification row + exactly ONE phone
+    channel (FCM when the user has a registered device, ntfy otherwise)
+    + web push for PWA subscribers. Returns the number of users notified.
+    The actor (sender) is skipped so the button never spams its own phone."""
+    message = "Dodane nove stvari za nabavu"
+    title = app_title(db)
+    delivered = 0
+    for uid in get_nabava_group(db):
+        if uid == actor.id:
+            continue  # the sender knows — no self-notification
+        user = db.get(User, uid)
+        if not user:
+            continue  # stale ID in the setting (user deleted) — skip quietly
+        db.add(Notification(user_id=user.id, message=message, link="/nabava"))
+        if not send_fcm(db, user, message):
+            send_ntfy(user, title, message)
+        send_webpush(db, user, title, message)
+        delivered += 1
+    if delivered:
+        db.commit()
+    return delivered
+
+
 THUMB_SIZE = (420, 420)  # max thumbnail dimensions (JPEG, quality 80)
 
 app = FastAPI(title="Private Workspace")
@@ -994,6 +1058,7 @@ def read_settings(db: Db):
         default_columns=get_default_columns(db),
         default_todo_list=get_default_todo_list_name(db),
         ntfy_base_url=NTFY_PUBLIC_URL,
+        nabava_group=get_nabava_group(db),
     )
 
 
@@ -1045,11 +1110,22 @@ def update_settings(payload: SettingsIn, db: Db, user: CurrentUser):
         else:
             db.add(Setting(key=DEFAULT_TODO_LIST_KEY, value=todo_name))
 
+    if payload.nabava_group is not None:
+        # Keep only IDs that actually exist — a deleted user must not linger
+        # invisibly in the group (delete_user cannot clean this Setting).
+        valid_ids = set(db.scalars(select(User.id)).all())  # type: ignore
+        seen: list[int] = []
+        for uid in payload.nabava_group:
+            if uid in valid_ids and uid not in seen:
+                seen.append(uid)
+        set_nabava_group(db, seen)
+
     db.commit()
     return SettingsOut(
         app_name=name,
         default_columns=get_default_columns(db),
         default_todo_list=get_default_todo_list_name(db),
+        nabava_group=get_nabava_group(db),
     )
 
 
@@ -1308,6 +1384,25 @@ def test_ntfy(db: Db, user: CurrentUser):
     if not ok:
         return {"ok": False, "reason": "ntfy poslužitelj nije odgovorio (provjerite NTFY_URL)"}
     return {"ok": True, "topic": user.ntfy_topic}
+
+
+@app.post("/api/nabava/notify")
+def notify_nabava(db: Db, user: CurrentUser):
+    """1.16.0: the "Pošalji obavijest" button on the Nabava lists — notify the
+    whole Nabava group that new items are waiting. Any authenticated user may
+    add items to the lists, so anyone may ring the bell; the group itself is
+    admin-managed in Postavke. Returns how many users were notified."""
+    open_count = db.scalar(
+        select(func.count(TodoEntry.id)).where(TodoEntry.is_done.is_(False))  # type: ignore
+    ) or 0
+    notified = notify_nabava_group(db, user, int(open_count))
+    if notified == 0:
+        return {
+            "ok": False,
+            "notified": 0,
+            "reason": "Nabava grupa je prazna — dodajte korisnike u grupu u Postavkama.",
+        }
+    return {"ok": True, "notified": notified}
 
 
 @app.get("/api/users", response_model=list[UserOut])
@@ -2415,6 +2510,27 @@ def download_file(file_id: int, db: Db, _: CurrentUser):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Datoteka nije pronađena na disku")
     return FileResponse(path, media_type=row.content_type, filename=row.original_name)
+
+
+@app.patch("/api/files/{file_id}")
+def rename_file(file_id: int, payload: FileRenameIn, db: Db, user: CurrentUser):
+    """1.16.0: rename an uploaded file (display name only — the stored file on
+    disk and its download name keep working through original_name). Anyone
+    authenticated may rename: the file section is a shared workspace, same as
+    upload/delete."""
+    row = db.get(StoredFile, file_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Datoteka ne postoji")
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Naziv ne može biti prazan")
+    if len(name) > 255:
+        raise HTTPException(status_code=400, detail="Naziv je predugačak (max 255 znakova)")
+    row.original_name = name
+    db.commit()
+    if row.project_id is not None:
+        notify_change("files", row.project_id)
+    return {"id": row.id, "name": row.original_name}
 
 
 @app.delete("/api/files/{file_id}")

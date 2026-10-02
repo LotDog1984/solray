@@ -330,6 +330,8 @@ async function loadAppName() {
     state.appName = settings.app_name || "Private Workspace";
     state.defaultColumns = Array.isArray(settings.default_columns) ? settings.default_columns : [];
     state.defaultTodoListName = settings.default_todo_list || "Nabava";
+    // 1.16.0: Nabava group (user IDs) — recipients of the "Pošalji obavijest" button.
+    state.nabavaGroup = Array.isArray(settings.nabava_group) ? settings.nabava_group.map(Number) : [];
   } catch {
     state.appName = "Private Workspace";
   }
@@ -615,13 +617,15 @@ function renderIconRail() {
   const initials = userName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
   rail.innerHTML = `
     <div class="rail-mark" title="${escapeHtml(state.appName || "My Team")}">M<span>✦</span></div>
-    <button class="rail-button ${active("projects") ? "active" : ""}" data-rail-action="projects" title="Projekti" aria-label="Projekti"><span>▦</span></button>
-    <button class="rail-button ${active("nabava") ? "active" : ""}" data-rail-action="nabava" title="${escapeHtml(state.defaultTodoListName || "Nabava")}" aria-label="Nabava"><span>🛒</span></button>
-    <button class="rail-button ${active("files") ? "active" : ""}" data-rail-action="files" title="Datoteke" aria-label="Datoteke"><span>🗂</span></button>
-    <button class="rail-button ${active("notifications") ? "active" : ""}" data-rail-action="notifications" title="Obavijesti" aria-label="Obavijesti"><span>🔔</span>${badge}</button>
+    <!-- 1.16.0: text labels under the icons — visible on iPhone PWA too, where
+         title= tooltips don't exist. -->
+    <button class="rail-button ${active("projects") ? "active" : ""}" data-rail-action="projects" title="Projekti" aria-label="Projekti"><span>▦</span><small class="rail-label">Projekti</small></button>
+    <button class="rail-button ${active("nabava") ? "active" : ""}" data-rail-action="nabava" title="${escapeHtml(state.defaultTodoListName || "Nabava")}" aria-label="Nabava"><span>🛒</span><small class="rail-label">${escapeHtml(state.defaultTodoListName || "Nabava")}</small></button>
+    <button class="rail-button ${active("files") ? "active" : ""}" data-rail-action="files" title="Datoteke" aria-label="Datoteke"><span>🗂</span><small class="rail-label">Datoteke</small></button>
+    <button class="rail-button ${active("notifications") ? "active" : ""}" data-rail-action="notifications" title="Obavijesti" aria-label="Obavijesti"><span>🔔</span><small class="rail-label">Obavijesti</small>${badge}</button>
     <span class="rail-spacer"></span>
-    <button class="rail-button" data-rail-action="search" title="Pretraga" aria-label="Pretraga"><span>⌕</span></button>
-    <button class="rail-button ${active("settings") ? "active" : ""}" data-rail-action="settings" title="Postavke" aria-label="Postavke"><span>⚙</span></button>
+    <button class="rail-button" data-rail-action="search" title="Pretraga" aria-label="Pretraga"><span>⌕</span><small class="rail-label">Pretraga</small></button>
+    <button class="rail-button ${active("settings") ? "active" : ""}" data-rail-action="settings" title="Postavke" aria-label="Postavke"><span>⚙</span><small class="rail-label">Postavke</small></button>
     <button class="rail-avatar" data-rail-action="logout" title="Odjava · ${escapeHtml(userName)}" aria-label="Odjava">${escapeHtml(initials || "MT")}</button>
   `;
   rail.querySelectorAll("[data-rail-action]").forEach((button) => {
@@ -1140,6 +1144,7 @@ function renderKanban(board) {
   const todoPanel = `
     <div class="column todo-panel" id="boardTodoPanel" data-board-id="${board.id}" style="--column-index:${board.columns.length}">
       <h2><span class="column-dot"></span>${escapeHtml(state.defaultTodoListName || "Nabava")} <small class="column-count" title="${todoEntries.filter((entry) => !entry.is_done).length} otvoreno · ${todoEntries.length} ukupno">${todoEntries.filter((entry) => !entry.is_done).length}</small></h2>
+      <button type="button" class="secondary todo-notify" id="boardTodoNotify" title="Obavijesti sve korisnike u Nabava grupi da ima novih stavki">🔔 Pošalji obavijest</button>
       <div class="tasks" id="boardTodoEntries">${renderTodoEntries(todoEntries)}</div>
       <form id="boardTodoForm" style="margin-top:10px;display:grid;gap:6px;">
         <input name="title" placeholder="Nova stavka (npr. nema više vijaka 6x60)..." required />
@@ -1328,6 +1333,25 @@ function bindBoardTodoEvents(board) {
       }
     };
   });
+
+  // 1.16.0: "Pošalji obavijest" in the board To-Do (Nabava) panel — same
+  // group fan-out as the global Nabava view's button.
+  const todoNotify = document.querySelector("#boardTodoNotify");
+  if (todoNotify) {
+    todoNotify.onclick = async () => {
+      const original = todoNotify.textContent;
+      todoNotify.disabled = true;
+      todoNotify.textContent = "Šaljem…";
+      try {
+        const res = await api.json("/api/nabava/notify", "POST", {});
+        alert(res.ok ? `✓ Obavijest poslana ${res.notified} korisniku/cima.` : res.reason);
+      } catch (error) {
+        alert(error.message);
+      }
+      todoNotify.textContent = original;
+      todoNotify.disabled = false;
+    };
+  }
 }
 
 function renderTask(task) {
@@ -1610,6 +1634,7 @@ async function renderFiles() {
       const actions = `
         <div class="file-actions">
           <button type="button" class="secondary download-file" data-file-id="${f.id}">Preuzmi</button>
+          <button type="button" class="secondary rename-file" data-file-id="${f.id}" aria-label="Preimenuj ${escapeHtml(f.name)}">Preimenuj</button>
           <button type="button" class="danger delete-file" data-file-id="${f.id}" aria-label="Obriši ${escapeHtml(f.name)}">Obriši</button>
         </div>`;
       if (state.filesMode === "grid") {
@@ -1688,6 +1713,28 @@ async function renderFiles() {
       btn.disabled = true;
       try {
         await api.request(`/api/files/${btn.dataset.fileId}`, { method: "DELETE" });
+        await renderFiles();
+      } catch (error) {
+        btn.disabled = false;
+        alert(error.message);
+      }
+    };
+  });
+
+  view.querySelectorAll(".rename-file").forEach((btn) => {
+    btn.onclick = async () => {
+      const file = files.find((item) => String(item.id) === btn.dataset.fileId);
+      if (!file) return;
+      const name = prompt("Novi naziv datoteke:", file.name);
+      if (name === null) return;
+      const cleaned = name.trim();
+      if (!cleaned) {
+        alert("Naziv ne može biti prazan");
+        return;
+      }
+      btn.disabled = true;
+      try {
+        await api.json(`/api/files/${btn.dataset.fileId}`, "PATCH", { name: cleaned });
         await renderFiles();
       } catch (error) {
         btn.disabled = false;
@@ -1866,6 +1913,7 @@ async function renderNabava() {
     </div>
     <p class="muted" style="font-size:13px;margin:6px 0 0 0;">Zajednički popis svih stavki za nabavu iz svih ploča. Svaka stavka nosi projekt i ploču u kojoj je nastala, a ovdje ih možete i ručno dodati.</p>
     <div class="row nabava-actions">
+      <button type="button" id="nabavaNotify" class="primary nabava-notify" title="Obavijesti sve korisnike u Nabava grupi da ima novih stavki">🔔 Pošalji obavijest</button>
       <button type="button" id="nabavaMail" class="secondary" title="Otvori vašu poštu s popisom neoznačenih stavki">✉️ Pošalji e-mailom</button>
       <button type="button" id="nabavaClear" class="danger" title="Obriši sve označene (nabavljene) stavke iz svih popisa">Izbriši Preuzete Stvari</button>
     </div>
@@ -1875,6 +1923,25 @@ async function renderNabava() {
     </form>
     <div class="nabava-list">${rows || '<div class="muted">Nema stavki za nabavu. Dodajte ih u To-Do popisu na bilo kojoj ploči ili ručno ovdje.</div>'}</div>
   </div>`;
+
+  // 1.16.0: "Pošalji obavijest" — one tap notifies the whole Nabava group
+  // (managed by the admin in Postavke) that there are new items.
+  const notifyBtn = view.querySelector("#nabavaNotify");
+  if (notifyBtn) {
+    notifyBtn.onclick = async () => {
+      const original = notifyBtn.textContent;
+      notifyBtn.disabled = true;
+      notifyBtn.textContent = "Šaljem…";
+      try {
+        const res = await api.json("/api/nabava/notify", "POST", {});
+        alert(res.ok ? `✓ Obavijest poslana ${res.notified} korisniku/cima.` : res.reason);
+      } catch (error) {
+        alert(error.message);
+      }
+      notifyBtn.textContent = original;
+      notifyBtn.disabled = false;
+    };
+  }
 
   // 1.9.2: edit a Stavka's text after creation (typos, wrong quantities) —
   // prompt matches the project/board rename convention. Works for both
@@ -2060,6 +2127,21 @@ async function renderSettings() {
         <button type="submit">Spremi naziv</button>
       </form>
       <p class="muted" style="font-size:13px;">Ovaj naziv nosi To-Do popis na svakoj ploči i globalni gumb u lijevoj traci (trenutno: „${escapeHtml(state.defaultTodoListName || "Nabava")}"). Promjena vrijedi odmah za sve ploče.</p>
+    </div>
+    <!-- 1.16.0: Nabava grupa — primatelji "Pošalji obavijest" obavijesti -->
+    <div class="panel">
+      <h2 style="margin-top:0;">Nabava grupa</h2>
+      <p class="muted" style="font-size:13px;margin-top:0;">Korisnici koji primaju obavijest „Dodane nove stvari za nabavu” kad netko klikne „Pošalji obavijest” na Nabava popisu (gumb 🔔 na globalnom popisu i To-Do panelu svake ploče).</p>
+      <div id="nabavaGroupList" class="files" style="margin-bottom:12px;"></div>
+      <form id="nabavaGroupForm" class="row">
+        <select name="user_id" required>
+          <option value="">Dodaj korisnika u grupu…</option>
+          ${(state.users || [])
+            .map((u) => `<option value="${u.id}">${escapeHtml(u.display_name || u.username)} (@${escapeHtml(u.username)})</option>`)
+            .join("")}
+        </select>
+        <button type="submit">Dodaj u grupu</button>
+      </form>
     </div>`
     : "";
 
@@ -2153,6 +2235,57 @@ async function renderSettings() {
         alert(error.message);
       }
     };
+  }
+
+  // 1.16.0: Nabava group management (admin) — render + add/remove.
+  const groupList = document.querySelector("#nabavaGroupList");
+  if (groupList) {
+    const renderGroup = () => {
+      const members = (state.users || []).filter((u) => (state.nabavaGroup || []).includes(u.id));
+      groupList.innerHTML = members.length
+        ? members
+            .map(
+              (u) => `
+          <div class="file-item">
+            <strong>${escapeHtml(u.display_name || u.username)}</strong>
+            <small class="muted">@${escapeHtml(u.username)}${u.id === state.me?.id ? " · to ste vi" : ""}</small>
+            <button class="danger remove-group-user" data-id="${u.id}">Ukloni</button>
+          </div>`
+            )
+            .join("")
+        : '<small class="muted">Grupa je prazna — nitko neće primiti obavijest dok ne dodate korisnike.</small>';
+      groupList.querySelectorAll(".remove-group-user").forEach((btn) => {
+        btn.onclick = async () => {
+          state.nabavaGroup = (state.nabavaGroup || []).filter((id) => id !== Number(btn.dataset.id));
+          await saveNabavaGroup();
+        };
+      });
+    };
+    const saveNabavaGroup = async () => {
+      try {
+        const settings = await api.json("/api/settings", "PUT", {
+          app_name: state.appName || "Private Workspace",
+          nabava_group: state.nabavaGroup || [],
+        });
+        state.nabavaGroup = Array.isArray(settings.nabava_group) ? settings.nabava_group.map(Number) : [];
+        renderGroup();
+      } catch (error) {
+        alert(error.message);
+        renderGroup();
+      }
+    };
+    renderGroup();
+    const groupForm = document.querySelector("#nabavaGroupForm");
+    if (groupForm) {
+      groupForm.onsubmit = async (event) => {
+        event.preventDefault();
+        const uid = Number(new FormData(groupForm).get("user_id"));
+        if (!uid) return;
+        if (!(state.nabavaGroup || []).includes(uid)) state.nabavaGroup = [...(state.nabavaGroup || []), uid];
+        groupForm.reset();
+        await saveNabavaGroup();
+      };
+    }
   }
 
   if (state.me?.is_admin) {

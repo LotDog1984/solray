@@ -186,7 +186,10 @@ class _FilesScreenState extends State<FilesScreen> {
     } catch (_) {
       // compression unavailable / failed — the original upload still works
     }
-    final name = await _photoNameDialog(prefill: defaultPhotoName(shot.name));
+    // 1.16.0: the name dialog opens with a BLANK field — the old default
+    // (date / original gallery name) had to be deleted by hand every single
+    // time. An empty name still falls back to defaultPhotoName() below.
+    final name = await _photoNameDialog();
     if (name == null || !mounted) return; // cancelled — the photo is discarded
     final trimmed = name.trim();
     final fileName = trimmed.isEmpty
@@ -203,7 +206,9 @@ class _FilesScreenState extends State<FilesScreen> {
   }
 
   /// Dialog before the upload: the user names the photo so it is easy to
-  /// find in the list later. Cancel throws the photo away.
+  /// find in the list later. 1.16.0: the field starts BLANK (no prefill to
+  /// delete) — saving an empty name falls back to the automatic
+  /// [defaultPhotoName]. Cancel throws the photo away.
   Future<String?> _photoNameDialog({String? prefill}) {
     final controller = TextEditingController(text: prefill ?? '');
     return showDialog<String>(
@@ -213,7 +218,10 @@ class _FilesScreenState extends State<FilesScreen> {
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(labelText: 'Naziv slike'),
+          decoration: const InputDecoration(
+            labelText: 'Naziv slike',
+            hintText: 'Prazno = automatski naziv',
+          ),
           onSubmitted: (v) => Navigator.of(context).pop(v),
         ),
         actions: [
@@ -536,10 +544,10 @@ Future<void> writeFileBytes(String path, List<int> bytes) async {
 /// Top-level (pure Dart) so tests can call it directly.
 const (int, int)? Function(Uint8List) decodeImageDimensions = _decodeImageDimensions;
 
-/// Default file name for a picked/taken photo: keep the original name (without
-/// extension) when it is meaningful — people recognize their photos that way —
-/// otherwise today's date like the camera flow. Top-level (pure Dart) so
-/// tests can call it directly. 1.14.1.
+/// Fallback file name for a photo whose dialog field was left empty (1.16.0:
+/// the dialog starts blank): keep the original gallery name (without
+/// extension) when it is meaningful, otherwise today's date. Top-level (pure
+/// Dart) so tests can call it directly.
 String defaultPhotoName(String originalName) {
   final base = originalName.replaceAll(RegExp(r'\.[^.]+$'), '').trim();
   if (base.isNotEmpty && base.toLowerCase() != 'image') return '$base.jpg';

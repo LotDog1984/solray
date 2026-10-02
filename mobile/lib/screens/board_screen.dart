@@ -139,6 +139,25 @@ class _BoardScreenState extends State<BoardScreen> {
           ColumnRef.from(Map<String, dynamic>.from(c as Map)),
       ];
 
+  /// 1.16.0: "Pošalji obavijest" from the board To-Do (Nabava) panel — the
+  /// same group fan-out as the global Nabava view's yellow bell.
+  Future<void> _notifyNabava() async {
+    try {
+      final res = await widget.api.post('/api/nabava/notify', <String, dynamic>{})
+          as Map<String, dynamic>;
+      if (!mounted) return;
+      final ok = res['ok'] as bool? ?? false;
+      final notified = res['notified'] as int? ?? 0;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ok
+            ? '✓ Obavijest poslana $notified korisniku/cima.'
+            : (res['reason'] as String? ?? 'Slanje nije uspjelo.')),
+      ));
+    } catch (e) {
+      _showError(e);
+    }
+  }
+
   Future<bool> _confirm(String message) async {
     final res = await showDialog<bool>(
       context: context,
@@ -572,6 +591,7 @@ class _BoardScreenState extends State<BoardScreen> {
                         onToggle: _toggleTodo,
                         onDelete: _deleteTodo,
                         onRename: _renameTodo,
+                        onNotify: _notifyNabava,
                       ),
                       if (columns.isEmpty)
                         const Center(
@@ -723,6 +743,7 @@ class _TodoPanel extends StatelessWidget {
     required this.onToggle,
     required this.onDelete,
     required this.onRename,
+    required this.onNotify,
   });
 
   final String name;
@@ -731,6 +752,7 @@ class _TodoPanel extends StatelessWidget {
   final Future<void> Function(Map<String, dynamic>) onToggle;
   final Future<void> Function(Map<String, dynamic>) onDelete;
   final Future<void> Function(Map<String, dynamic>) onRename;
+  final Future<void> Function() onNotify;
 
   @override
   Widget build(BuildContext context) {
@@ -772,6 +794,18 @@ class _TodoPanel extends StatelessWidget {
                   ),
               ],
             ),
+          ),
+          const SizedBox(height: 4),
+          // 1.16.0: yellow bell — notify the Nabava group about new items.
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFFACC15),
+              foregroundColor: const Color(0xFF231A00),
+              textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+            onPressed: entries.any((e) => !(e['is_done'] as bool? ?? false)) ? onNotify : null,
+            icon: const Icon(Icons.notifications_active, size: 16),
+            label: const Text('Pošalji obavijest'),
           ),
           const SizedBox(height: 4),
           OutlinedButton.icon(
