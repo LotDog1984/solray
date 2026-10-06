@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api.dart';
 import '../theme.dart';
 import 'board_screen.dart';
+import 'session_expired.dart';
 
 /// Boards layer for one project (web parity): list, create, rename, delete,
 /// move a board to another project.
@@ -50,6 +51,9 @@ class _BoardsScreenState extends State<BoardsScreen> {
             .map((b) => Map<String, dynamic>.from(b as Map)));
         _loading = false;
       });
+    } on AuthExpired {
+      // 1.18.1: dead token → login screen instead of a retry that 401s forever.
+      if (mounted) forceLoginScreen(context, widget.api);
     } catch (e) {
       setState(() {
         _error = e.toString().replaceFirst('Exception: ', '');

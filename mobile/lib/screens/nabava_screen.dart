@@ -5,6 +5,7 @@ import '../api.dart';
 import '../attrib.dart';
 import '../theme.dart';
 import 'board_screen.dart';
+import 'session_expired.dart';
 
 /// 1.10.0: plain-text order for the supplier — only OPEN (unchecked) Stavke,
 /// so re-sending an order never repeats already-bought items. 1.10.1: just the
@@ -63,6 +64,9 @@ class _NabavaTabState extends State<NabavaTab> {
         _listName = d['name'] as String? ?? 'Nabava';
         _loading = false;
       });
+    } on AuthExpired {
+      // 1.18.1: dead token → login screen instead of a retry that 401s forever.
+      if (mounted) forceLoginScreen(context, widget.api);
     } catch (e) {
       setState(() {
         _error = e.toString().replaceFirst('Exception: ', '');

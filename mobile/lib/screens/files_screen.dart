@@ -15,6 +15,7 @@ import 'package:share_plus/share_plus.dart';
 import '../api.dart';
 import '../services/sync.dart';
 import '../theme.dart';
+import 'session_expired.dart';
 
 /// Datoteke for one project (web parity): upload, thumbnails, list/grid,
 /// open & share. Auth token is embedded in thumb URLs like the web app.
@@ -94,6 +95,9 @@ class _FilesScreenState extends State<FilesScreen> {
         _files = List<Map<String, dynamic>>.from(files.map((f) => Map<String, dynamic>.from(f as Map)));
         _loading = false;
       });
+    } on AuthExpired {
+      // 1.18.1: dead token → login screen instead of a retry that 401s forever.
+      if (mounted) forceLoginScreen(context, widget.api);
     } catch (e) {
       setState(() {
         _error = e.toString().replaceFirst('Exception: ', '');

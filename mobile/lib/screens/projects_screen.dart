@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api.dart';
 import '../theme.dart';
 import 'boards_screen.dart';
+import 'session_expired.dart';
 
 /// Projects layer (web parity): list, create, rename, delete.
 /// Tap a project → its boards screen.
@@ -41,6 +42,9 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
       final data = await widget.api.get('/api/projects') as List<dynamic>;
       if (!mounted) return;
       setState(() => _projects = List<Map<String, dynamic>>.from(data.map((p) => Map<String, dynamic>.from(p as Map))));
+    } on AuthExpired {
+      // 1.18.1: dead token → login screen instead of a retry that 401s forever.
+      if (mounted) forceLoginScreen(context, widget.api);
     } catch (e) {
       setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
     }

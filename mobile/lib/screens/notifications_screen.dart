@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api.dart';
 import '../theme.dart';
 import 'board_screen.dart';
+import 'session_expired.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key, required this.api, this.onOpened});
@@ -28,6 +29,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     try {
       final items = await widget.api.get('/api/notifications') as List<dynamic>;
       setState(() => _items = items);
+    } on AuthExpired {
+      // 1.18.1: dead token → login screen instead of a retry that 401s forever.
+      if (mounted) forceLoginScreen(context, widget.api);
     } catch (e) {
       setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
     }

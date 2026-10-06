@@ -11,8 +11,8 @@ import '../services/sync.dart';
 import '../theme.dart';
 import 'board_screen.dart';
 import 'files_screen.dart';
-import 'login_screen.dart';
 import 'nabava_screen.dart';
+import 'session_expired.dart';
 import 'notifications_screen.dart';
 import 'projects_screen.dart';
 import 'search_screen.dart';
@@ -167,6 +167,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       // killed. Re-registered on every resume in case it rotated while away.
       _registerPush();
       _unreadPoll = Timer.periodic(const Duration(seconds: 30), (_) => _refreshUnread());
+    } on AuthExpired {
+      // 1.18.1: a stored-but-expired token used to land on the retry screen
+      // whose "Pokušaj ponovno" retried with the same dead token forever.
+      // Go straight to the login screen (token cleared, server kept).
+      _forceLogin();
     } catch (e) {
       setState(() {
         _loading = false;
@@ -288,12 +293,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   void _forceLogin() {
-    PushNotifications.unregister(widget.api); // 1.12.0: remove push token
-    Api.clearSession();
-    if (!mounted) return;
-    Navigator.of(context).pushReplacement(MaterialPageRoute(
-      builder: (_) => LoginScreen(baseUrl: widget.api.baseUrl),
-    ));
+    // 1.18.1: shared helper (session_expired.dart) so boot, refresh and the
+    // error screen's retry button all behave the same on a dead session.
+    forceLoginScreen(context, widget.api);
   }
 
   @override
