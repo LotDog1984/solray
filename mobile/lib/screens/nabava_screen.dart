@@ -84,8 +84,16 @@ class _NabavaTabState extends State<NabavaTab> {
   Future<void> _toggle(Map<String, dynamic> e) async {
     final next = !(e['is_done'] as bool? ?? false);
     try {
-      await widget.api.patch('/api/boards/${e['board_id']}/todo/${e['id']}',
-          {'title': e['title'], 'is_done': next});
+      if (e['board_id'] != null) {
+        await widget.api.patch('/api/boards/${e['board_id']}/todo/${e['id']}',
+            {'title': e['title'], 'is_done': next});
+      } else {
+        // 1.18.2: manually added entries live on the global list (board_id is
+        // null) — the board-scoped PATCH built "/api/boards/null/todo/..."
+        // and the server answered HTTP 422. Route them to /api/nabava/items
+        // like the web app does.
+        await widget.api.patch('/api/nabava/items/${e['id']}', {'is_done': next});
+      }
       await _load();
       widget.onChanged?.call();
     } catch (err) {
@@ -95,7 +103,13 @@ class _NabavaTabState extends State<NabavaTab> {
 
   Future<void> _delete(Map<String, dynamic> e) async {
     try {
-      await widget.api.delete('/api/boards/${e['board_id']}/todo/${e['id']}');
+      if (e['board_id'] != null) {
+        await widget.api.delete('/api/boards/${e['board_id']}/todo/${e['id']}');
+      } else {
+        // 1.18.2: manual entries delete via the global route — the
+        // board-scoped DELETE on a null board id answered HTTP 422.
+        await widget.api.delete('/api/nabava/items/${e['id']}');
+      }
       await _load();
       widget.onChanged?.call();
     } catch (err) {
