@@ -1117,7 +1117,7 @@ function renderKanban(board) {
       const openCount = col.tasks.filter((task) => !task.completed).length;
       return `
       <div class="column" data-column-id="${col.id}" style="--column-index:${index}">
-        <h2><span class="column-dot"></span>${escapeHtml(col.name)} <small class="column-count" title="${openCount} otvoreno · ${col.tasks.length} ukupno">${openCount}</small><button type="button" class="column-add add-task-shortcut" title="Dodaj zadatak" aria-label="Dodaj zadatak">＋</button></h2>
+        <h2><span class="column-dot"></span>${escapeHtml(col.name)} <small class="column-count" title="${openCount} otvoreno · ${col.tasks.length} ukupno">${openCount}</small><button type="button" class="column-add column-copy" data-copy-column="${col.id}" title="Kopiraj sve zadatke kolone" aria-label="Kopiraj kolonu">⧉</button><button type="button" class="column-add add-task-shortcut" title="Dodaj zadatak" aria-label="Dodaj zadatak">＋</button></h2>
         <div class="tasks" data-tasks-for="${col.id}">${tasks}</div>
         <form class="new-task-form" data-column-id="${col.id}">
           <div class="quick-task-row"><input name="title" placeholder="Novi zadatak..." required /><button type="submit" class="primary" title="Dodaj zadatak">＋</button></div>
@@ -1143,7 +1143,7 @@ function renderKanban(board) {
   const todoEntries = board.todo_list?.entries || [];
   const todoPanel = `
     <div class="column todo-panel" id="boardTodoPanel" data-board-id="${board.id}" style="--column-index:${board.columns.length}">
-      <h2><span class="column-dot"></span>${escapeHtml(state.defaultTodoListName || "Nabava")} <small class="column-count" title="${todoEntries.filter((entry) => !entry.is_done).length} otvoreno · ${todoEntries.length} ukupno">${todoEntries.filter((entry) => !entry.is_done).length}</small></h2>
+      <h2><span class="column-dot"></span>${escapeHtml(state.defaultTodoListName || "Nabava")} <small class="column-count" title="${todoEntries.filter((entry) => !entry.is_done).length} otvoreno · ${todoEntries.length} ukupno">${todoEntries.filter((entry) => !entry.is_done).length}</small><button type="button" class="column-add" id="boardTodoCopy" title="Kopiraj cijeli popis" aria-label="Kopiraj popis">⧉</button></h2>
       <button type="button" class="secondary todo-notify" id="boardTodoNotify" title="Obavijesti sve korisnike u Nabava grupi da ima novih stavki">🔔 Pošalji obavijest</button>
       <div class="tasks" id="boardTodoEntries">${renderTodoEntries(todoEntries)}</div>
       <form id="boardTodoForm" style="margin-top:10px;display:grid;gap:6px;">
@@ -1164,6 +1164,31 @@ function renderKanban(board) {
     </div>`;
 
   bindBoardTodoEvents(board);
+
+  // 1.19.0: copy a whole column (⧉ in the column header) or the To-Do list.
+  kanban.querySelectorAll("[data-copy-column]").forEach((btn) => {
+    btn.onclick = async () => {
+      const column = board.columns.find((c) => c.id === Number(btn.dataset.copyColumn));
+      const text = buildColumnCopyText(column);
+      if (!text) {
+        showToast("Kolona je prazna");
+        return;
+      }
+      if (await copyText(text)) showToast("✓ Kolona kopirana");
+    };
+  });
+  const todoCopyBtn = kanban.querySelector("#boardTodoCopy");
+  if (todoCopyBtn) {
+    todoCopyBtn.onclick = async () => {
+      const entries = board.todo_list?.entries || [];
+      const text = buildTodoCopyText(entries, state.defaultTodoListName || "Nabava");
+      if (!text) {
+        showToast("Popis je prazan");
+        return;
+      }
+      if (await copyText(text)) showToast("✓ Popis kopiran");
+    };
+  }
 
   // The global and per-column + buttons focus the nearest quick task field.
   kanban.querySelectorAll(".add-task-shortcut").forEach((button) => {
@@ -1391,6 +1416,7 @@ function renderTask(task) {
         : ""
     }
     <div class="row">
+      <button class="secondary copy-task" data-task-id="${task.id}" title="Kopiraj zadatak (naslov, opis i popis)">⧉ Kopiraj</button>
       <button class="secondary edit-task" data-task-id="${task.id}">Uredi</button>
       <button class="danger delete-task" data-task-id="${task.id}">Obriši</button>
     </div>
@@ -1444,6 +1470,16 @@ function bindTaskEvents(board) {
       e.dataTransfer.setData("text/plain", el.dataset.taskId);
     });
   });
+  // 1.19.0: copy a whole task (title + description + checklist) with one tap.
+  document.querySelectorAll(".copy-task").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = Number(btn.dataset.taskId);
+      const task = board.columns.flatMap((c) => c.tasks).find((t) => t.id === id);
+      if (!task) return;
+      if (await copyText(buildTaskCopyText(task))) showToast("✓ Zadatak kopiran");
+    };
+  });
+
   document.querySelectorAll(".edit-task").forEach((btn) => {
     btn.onclick = () => {
       const id = Number(btn.dataset.taskId);
@@ -1860,6 +1896,65 @@ async function renderNotifications() {
   }
 }
 
+/* ------------------------------ 1.19.0: copy ------------------------------- */
+
+/* Copy [text] to the clipboard, with a prompt() fallback for contexts where
+   the async clipboard API is unavailable (non-HTTPS, old WebView) — the same
+   approach the 1.10.0 mail export uses. Returns true when the user ended up
+   with the text (clipboard or the fallback dialog). */
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    return window.prompt("Kopirajte sadržaj (Ctrl+C):", text) !== null;
+  }
+}
+
+/* Tiny transient toast — copy feedback must never block like alert() does. */
+function showToast(message) {
+  let el = document.querySelector("#toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(showToast._timer);
+  showToast._timer = setTimeout(() => el.classList.remove("show"), 1800);
+}
+
+/* Clipboard text builders — ONE shared format for web and mobile:
+   a task = title + description + checklist (✓/✗ lines);
+   a column/list = name, an "=" underline, then one line per row
+   (✓ done, • open). Titles never carry prefixes in the source data,
+   so the output is paste-ready for e-mail or notes. */
+function buildTaskCopyText(task) {
+  let text = task.title || "";
+  if (task.description) text += `\n\n${task.description}`;
+  const items = task.items || [];
+  if (items.length) {
+    text += `\n\nPopis:\n${items.map((i) => `${i.is_done ? "✓" : "✗"} ${i.title}`).join("\n")}`;
+  }
+  return text;
+}
+
+function buildColumnCopyText(column) {
+  const tasks = column?.tasks || [];
+  if (!tasks.length) return "";
+  const lines = tasks.map((t) => `${t.completed ? "✓" : "•"} ${t.title}`);
+  return `${column.name}\n${"=".repeat(column.name.length)}\n${lines.join("\n")}`;
+}
+
+function buildTodoCopyText(entries, listName) {
+  const name = listName || "Nabava";
+  const list = entries || [];
+  if (!list.length) return "";
+  const lines = list.map((e) => `${e.is_done ? "✓" : "•"} ${e.title}`);
+  return `${name}\n${"=".repeat(name.length)}\n${lines.join("\n")}`;
+}
+
 /* ---------------------------------- nabava --------------------------------- */
 
 /* Global shopping list: every Stavka from every board's supplies To-Do list in
@@ -1915,6 +2010,7 @@ async function renderNabava() {
     <div class="row nabava-actions">
       <button type="button" id="nabavaNotify" class="primary nabava-notify" title="Obavijesti sve korisnike u Nabava grupi da ima novih stavki">🔔 Pošalji obavijest</button>
       <button type="button" id="nabavaMail" class="secondary" title="Otvori vašu poštu s popisom neoznačenih stavki">✉️ Pošalji e-mailom</button>
+      <button type="button" id="nabavaCopy" class="secondary" title="Kopiraj cijeli popis (označene uključene)">⧉ Kopiraj popis</button>
       <button type="button" id="nabavaClear" class="danger" title="Obriši sve označene (nabavljene) stavke iz svih popisa">Izbriši Preuzete Stvari</button>
     </div>
     <form id="nabavaAddForm" class="row nabava-add-row">
@@ -1992,6 +2088,20 @@ async function renderNabava() {
         mailBtn.textContent = original;
         mailBtn.disabled = false;
       }, 2500);
+    };
+  }
+
+  // 1.19.0: copy the whole list — checked included (the mail export sends
+  // only open items; this copies everything as-is).
+  const copyListBtn = view.querySelector("#nabavaCopy");
+  if (copyListBtn) {
+    copyListBtn.onclick = async () => {
+      const text = buildTodoCopyText(data.entries, name);
+      if (!text) {
+        showToast("Popis je prazan");
+        return;
+      }
+      if (await copyText(text)) showToast("✓ Popis kopiran");
     };
   }
 

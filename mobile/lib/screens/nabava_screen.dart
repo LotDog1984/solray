@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../api.dart';
 import '../attrib.dart';
+import '../copy_text.dart';
 import '../theme.dart';
 import 'board_screen.dart';
 import 'session_expired.dart';
@@ -114,6 +116,24 @@ class _NabavaTabState extends State<NabavaTab> {
       widget.onChanged?.call();
     } catch (err) {
       _showError(err);
+    }
+  }
+
+  /// 1.19.0: copy the whole list — checked included (the e-mail export sends
+  /// only open items). Same text format as the web app's ⧉ button.
+  Future<void> _copyList() async {
+    final text = buildTodoCopyText(_entries, _listName);
+    if (text.isEmpty) {
+      _showError('Popis je prazan');
+      return;
+    }
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('✓ Popis kopiran'), duration: Duration(seconds: 2)));
+    } catch (e) {
+      _showError(e);
     }
   }
 
@@ -296,6 +316,14 @@ class _NabavaTabState extends State<NabavaTab> {
             onPressed: _entries.any((e) => !(e['is_done'] as bool? ?? false)) ? _sendNotify : null,
             icon: const Icon(Icons.notifications_active, size: 18),
             label: const Text('Pošalji obavijest'),
+          ),
+          const SizedBox(height: 8),
+          const SizedBox(height: 4),
+          // 1.19.0: copy the whole list to the clipboard (checked included).
+          OutlinedButton.icon(
+            onPressed: _entries.isEmpty ? null : _copyList,
+            icon: const Icon(Icons.copy_outlined, size: 18),
+            label: const Text('⧉ Kopiraj cijeli popis'),
           ),
           const SizedBox(height: 8),
           Row(

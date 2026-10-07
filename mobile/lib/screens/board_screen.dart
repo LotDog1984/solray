@@ -1,9 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api.dart';
 import '../attrib.dart';
+import '../copy_text.dart';
 import '../services/sync.dart';
 import '../theme.dart';
 import 'search_screen.dart';
@@ -182,6 +184,49 @@ class _BoardScreenState extends State<BoardScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
+  }
+
+  /// 1.19.0: copy text to the system clipboard with a short confirmation.
+  Future<void> _copy(String text, String message) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+      if (!mounted) return;
+      _snack('✓ $message');
+    } catch (e) {
+      _showError(e);
+    }
+  }
+
+  /// 1.19.0: copy one task (title + description + checklist), same text as
+  /// the web app's ⧉ Kopiraj button.
+  Future<void> _copyTask(Map<String, dynamic> task) =>
+      _copy(buildTaskCopyText(task), 'Zadatak kopiran');
+
+  /// 1.19.0: copy every task of a column (✓ done, • open).
+  Future<void> _copyColumn(Map<String, dynamic> column) async {
+    final text = buildColumnCopyText(column);
+    if (text.isEmpty) {
+      _snack('Kolona nema zadataka');
+      return;
+    }
+    await _copy(text, 'Kolona kopirana');
+  }
+
+  /// 1.19.0: copy the whole To-Do ("Nabava") list.
+  Future<void> _copyTodoList() async {
+    final text = buildTodoCopyText(
+        _todoEntries, (_settings?['default_todo_list'] as String?) ?? 'Nabava');
+    if (text.isEmpty) {
+      _snack('Popis je prazan');
+      return;
+    }
+    await _copy(text, 'Popis kopiran');
   }
 
   // ---- board actions -------------------------------------------------------
@@ -581,6 +626,8 @@ class _BoardScreenState extends State<BoardScreen> {
                           onToggleItem: _toggleItem,
                           onRenameColumn: _renameColumn,
                           onDeleteColumn: _deleteColumn,
+                          onCopyTask: _copyTask,
+                          onCopyColumn: _copyColumn,
                         ),
                       // Supplies To-Do panel ("Nabava") — same list the web app
                       // shows and the global Nabava view aggregates.
@@ -592,6 +639,7 @@ class _BoardScreenState extends State<BoardScreen> {
                         onDelete: _deleteTodo,
                         onRename: _renameTodo,
                         onNotify: _notifyNabava,
+                        onCopy: _todoEntries.isEmpty ? null : () => _copyTodoList(),
                       ),
                       if (columns.isEmpty)
                         const Center(
@@ -631,6 +679,8 @@ class _ColumnView extends StatelessWidget {
     required this.onToggleItem,
     required this.onRenameColumn,
     required this.onDeleteColumn,
+    required this.onCopyTask,
+    required this.onCopyColumn,
   });
 
   final int index;
@@ -645,6 +695,8 @@ class _ColumnView extends StatelessWidget {
   final Future<void> Function(Map<String, dynamic>, Map<String, dynamic>) onToggleItem;
   final Future<void> Function(Map<String, dynamic>) onRenameColumn;
   final Future<void> Function(Map<String, dynamic>) onDeleteColumn;
+  final Future<void> Function(Map<String, dynamic>) onCopyTask;
+  final Future<void> Function(Map<String, dynamic>) onCopyColumn;
 
   @override
   Widget build(BuildContext context) {
@@ -691,6 +743,12 @@ class _ColumnView extends StatelessWidget {
               ),
               IconButton(
                 visualDensity: VisualDensity.compact,
+                tooltip: 'Kopiraj sve zadatke kolone',
+                icon: const Icon(Icons.copy_outlined, size: 16, color: SR.muted),
+                onPressed: () => onCopyColumn(raw),
+              ),
+              IconButton(
+                visualDensity: VisualDensity.compact,
                 tooltip: 'Preimenuj kolonu',
                 icon: const Icon(Icons.edit_outlined, size: 16, color: SR.muted),
                 onPressed: () => onRenameColumn(raw),
@@ -710,6 +768,7 @@ class _ColumnView extends StatelessWidget {
                 for (final t in tasks)
                   _TaskCard(
                     task: t,
+                    onCopy: () => onCopyTask(t),
                     onEdit: () => onEditTask(t),
                     onDelete: () => onDeleteTask(t),
                     onMove: () => onMoveTask(t),
@@ -744,6 +803,7 @@ class _TodoPanel extends StatelessWidget {
     required this.onDelete,
     required this.onRename,
     required this.onNotify,
+    this.onCopy,
   });
 
   final String name;
@@ -753,6 +813,7 @@ class _TodoPanel extends StatelessWidget {
   final Future<void> Function(Map<String, dynamic>) onDelete;
   final Future<void> Function(Map<String, dynamic>) onRename;
   final Future<void> Function() onNotify;
+  final VoidCallback? onCopy;
 
   @override
   Widget build(BuildContext context) {
@@ -777,6 +838,12 @@ class _TodoPanel extends StatelessWidget {
               Expanded(
                 child: Text('✅ $name (${entries.length})',
                     style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                tooltip: 'Kopiraj cijeli popis',
+                icon: const Icon(Icons.copy_outlined, size: 16, color: SR.muted),
+                onPressed: onCopy,
               ),
             ],
           ),
@@ -895,6 +962,7 @@ class _TodoRow extends StatelessWidget {
 class _TaskCard extends StatelessWidget {
   const _TaskCard({
     required this.task,
+    required this.onCopy,
     required this.onEdit,
     required this.onDelete,
     required this.onMove,
@@ -903,6 +971,7 @@ class _TaskCard extends StatelessWidget {
   });
 
   final Map<String, dynamic> task;
+  final VoidCallback onCopy;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback onMove;
@@ -971,11 +1040,13 @@ class _TaskCard extends StatelessWidget {
                     padding: EdgeInsets.zero,
                     iconColor: SR.muted,
                     onSelected: (v) {
+                      if (v == 'copy') onCopy();
                       if (v == 'edit') onEdit();
                       if (v == 'move') onMove();
                       if (v == 'delete') onDelete();
                     },
                     itemBuilder: (_) => const [
+                      PopupMenuItem(value: 'copy', child: Text('Kopiraj tekst')),
                       PopupMenuItem(value: 'edit', child: Text('Uredi')),
                       PopupMenuItem(value: 'move', child: Text('Premjesti')),
                       PopupMenuItem(value: 'delete', child: Text('Obriši')),
