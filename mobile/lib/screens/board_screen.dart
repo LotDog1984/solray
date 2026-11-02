@@ -21,6 +21,9 @@ class BoardScreen extends StatefulWidget {
     required this.boardId,
     required this.boardName,
     this.projects = const [],
+    // 1.21.0: opened from an archived project (Arhiva) — read-only for ADDS:
+    // no new tasks (server also rejects with 403; unarchive to keep building).
+    this.archived = false,
     this.syncListener,
   });
 
@@ -28,6 +31,7 @@ class BoardScreen extends StatefulWidget {
   final int boardId;
   final String boardName;
   final List<Map<String, dynamic>> projects; // for board move/delete dialogs
+  final bool archived; // 1.21.0: hides task-adding affordances
 
   @visibleForTesting
   final void Function(String scope, void Function() onEvent)? syncListener;
@@ -619,6 +623,7 @@ class _BoardScreenState extends State<BoardScreen> {
                           tasks: List<Map<String, dynamic>>.from(
                               (col['tasks'] as List<dynamic>? ?? []).map((t) => Map<String, dynamic>.from(t as Map))),
                           onNewTask: _newTask,
+                          readOnly: widget.archived,
                           onEditTask: _editTask,
                           onDeleteTask: _deleteTask,
                           onMoveTask: _moveTask,
@@ -652,7 +657,7 @@ class _BoardScreenState extends State<BoardScreen> {
                     ],
                   ),
                 ),
-      floatingActionButton: columns.isEmpty
+      floatingActionButton: (columns.isEmpty || widget.archived)
           ? null
           : FloatingActionButton.extended(
               backgroundColor: SR.accent,
@@ -672,6 +677,7 @@ class _ColumnView extends StatelessWidget {
     required this.raw,
     required this.tasks,
     required this.onNewTask,
+    this.readOnly = false,
     required this.onEditTask,
     required this.onDeleteTask,
     required this.onMoveTask,
@@ -688,6 +694,7 @@ class _ColumnView extends StatelessWidget {
   final Map<String, dynamic> raw;
   final List<Map<String, dynamic>> tasks;
   final Future<void> Function(Map<String, dynamic>) onNewTask;
+  final bool readOnly; // 1.21.0: archived project — hide "Novi task"
   final Future<void> Function(Map<String, dynamic>) onEditTask;
   final Future<void> Function(Map<String, dynamic>) onDeleteTask;
   final Future<void> Function(Map<String, dynamic>) onMoveTask;
@@ -781,11 +788,12 @@ class _ColumnView extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          OutlinedButton.icon(
-            onPressed: () => onNewTask(raw),
-            icon: const Icon(Icons.add, size: 16),
-            label: const Text('Novi task', style: TextStyle(fontSize: 12)),
-          ),
+          if (!readOnly)
+            OutlinedButton.icon(
+              onPressed: () => onNewTask(raw),
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text('Novi task', style: TextStyle(fontSize: 12)),
+            ),
         ],
       ),
     );

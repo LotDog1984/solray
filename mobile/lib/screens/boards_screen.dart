@@ -296,6 +296,7 @@ class _BoardsScreenState extends State<BoardsScreen> {
                                         boardId: b['id'] as int,
                                         boardName: b['name'] as String? ?? '',
                                         projects: _allProjects,
+                                        archived: widget.archived,
                                       ),
                                     ));
                                     await _load();
@@ -329,13 +330,16 @@ class _BoardsScreenState extends State<BoardsScreen> {
                 ],
               ),
             ),
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: SR.accent,
-        foregroundColor: Colors.white,
-        onPressed: _newBoard,
-        icon: const Icon(Icons.add),
-        label: const Text('Ploča'),
-      ),
+      // 1.21.0: archived project = no new boards („Vrati iz Arhive” to keep building).
+      floatingActionButton: widget.archived
+          ? null
+          : FloatingActionButton.extended(
+              backgroundColor: SR.accent,
+              foregroundColor: Colors.white,
+              onPressed: _newBoard,
+              icon: const Icon(Icons.add),
+              label: const Text('Ploča'),
+            ),
     );
   }
 }

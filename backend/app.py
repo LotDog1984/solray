@@ -1484,6 +1484,23 @@ def ensure_project_manage(db: Session, user: User, project: Project) -> None:
     return None
 
 
+def ensure_not_in_archived_project(db: Session, board_id: int) -> None:
+    """1.21.0: Arhiva is read-only for NEW content — no boards and no tasks may be
+    added into an archived project (adding into a project-less board is never
+    blocked: those are not 'in' a project). Unarchive to keep building."""
+    board = db.get(Board, board_id)
+    if board is None:
+        return  # the access check raises its own 404 elsewhere
+    if board.project_id is None:
+        return
+    project = db.get(Project, board.project_id)
+    if project is not None and project.archived:
+        raise HTTPException(
+            status_code=403,
+            detail="Projekt je u Arhivi — novi sadržaj se ne dodaje. Vratite ga iz Arhive („Vrati iz Arhive”).",
+        )
+
+
 def project_payload(project: Project, boards: list[dict]) -> dict:
     """Shared serialization for the projects lists (1.20.0: archived flag)."""
     return {
@@ -1644,6 +1661,12 @@ def create_board(payload: BoardIn, db: Db, user: CurrentUser):
         if not project:
             raise HTTPException(status_code=404, detail="Projekt ne postoji")
         ensure_project_manage(db, user, project)
+        # 1.21.0: archived project = no new boards (read-only Arhiva).
+        if project.archived:
+            raise HTTPException(
+                status_code=403,
+                detail="Projekt je u Arhivi — novi sadržaj se ne dodaje. Vratite ga iz Arhive („Vrati iz Arhive”).",
+            )
     else:
         # Shared workspace: a board without an explicit project goes into the
         # first existing ACTIVE project — never into a per-user "Glavni
@@ -2012,6 +2035,8 @@ def sorted_tasks(tasks: list[Task]) -> list[Task]:
 def create_task(payload: TaskIn, db: Db, user: CurrentUser):
     board_id = task_board_id(db, payload.column_id)
     ensure_board_access(db, user, board_id)
+    # 1.21.0: archived project = no new tasks (read-only Arhiva).
+    ensure_not_in_archived_project(db, board_id)
     task = Task(
         column_id=payload.column_id,
         title=payload.title.strip() or "Novi task",

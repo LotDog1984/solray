@@ -831,7 +831,7 @@ function renderSidebar() {
       <div class="project-context-meta">${summary.openTaskCount} otvoreno <i>·</i> ${summary.taskCount} zadataka</div>
       <div class="side-list board-list">${rows || '<div class="side-empty">Nema ploča</div>'}</div>
       ${project?.archived ? `<div class="archive-context-note" id="archiveContextNote">🗄 Arhivirano <button id="unarchiveSidebar" title="Vrati projekt stranicu projekata">Vrati iz Arhive</button></div>` : ""}
-      ${project ? `
+      ${project && !project.archived ? `
       <form id="newBoardForm" class="side-form">
         <input name="name" placeholder="Nova ploča..." required />
         <button type="submit" title="Dodaj ploču" aria-label="Dodaj ploču">+</button>
@@ -1274,14 +1274,19 @@ function renderKanban(board) {
   if (!kanban) return;
   state.board = board.id;
 
+  // 1.21.0: archived projects are read-only — no new boards, no new tasks.
+  // The add affordances disappear (copy ⧉, edits and drag-move stay).
+  const archived = Boolean(currentProject()?.archived);
+
   const columnsHtml = board.columns
     .map((col, index) => {
       const tasks = col.tasks.map((task) => renderTask(task)).join("");
       const openCount = col.tasks.filter((task) => !task.completed).length;
       return `
       <div class="column" data-column-id="${col.id}" style="--column-index:${index}">
-        <h2><span class="column-dot"></span>${escapeHtml(col.name)} <small class="column-count" title="${openCount} otvoreno · ${col.tasks.length} ukupno">${openCount}</small><button type="button" class="column-add column-copy" data-copy-column="${col.id}" title="Kopiraj sve zadatke kolone" aria-label="Kopiraj kolonu">⧉</button><button type="button" class="column-add add-task-shortcut" title="Dodaj zadatak" aria-label="Dodaj zadatak">＋</button></h2>
+        <h2><span class="column-dot"></span>${escapeHtml(col.name)} <small class="column-count" title="${openCount} otvoreno · ${col.tasks.length} ukupno">${openCount}</small><button type="button" class="column-add column-copy" data-copy-column="${col.id}" title="Kopiraj sve zadatke kolone" aria-label="Kopiraj kolonu">⧉</button>${archived ? "" : `<button type="button" class="column-add add-task-shortcut" title="Dodaj zadatak" aria-label="Dodaj zadatak">＋</button>`}</h2>
         <div class="tasks" data-tasks-for="${col.id}">${tasks}</div>
+        ${archived ? "" : `
         <form class="new-task-form" data-column-id="${col.id}">
           <div class="quick-task-row"><input name="title" placeholder="Novi zadatak..." required /><button type="submit" class="primary" title="Dodaj zadatak">＋</button></div>
           <details class="task-extra-details">
@@ -1296,7 +1301,7 @@ function renderKanban(board) {
               ${state.users.map((u) => `<option value="${u.id}">${escapeHtml(u.display_name || u.username)}</option>`).join("")}
             </select>
           </details>
-        </form>
+        </form>`}
       </div>`;
     })
     .join("");

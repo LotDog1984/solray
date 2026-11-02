@@ -1,4 +1,4 @@
-"""1.20.0: project archiving (Arhiva).
+"""1.20.0/1.21.0: project archiving (Arhiva).
 
 Contract points verified here (direct call style, like the other suites):
 - archive_project/unarchive_project flip projects.archived
@@ -7,6 +7,8 @@ Contract points verified here (direct call style, like the other suites):
   shape incl. boards + counts — nothing inside the project is filtered
 - search_everything skips archived projects, their boards, tasks and Nabava
 - a projectless board lands in the first ACTIVE project, never an archived one
+- 1.21.0: NO new boards into an archived project, NO new tasks on its boards
+  (Arhiva is read-only for additions — existing content stays fully editable)
 """
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -150,3 +152,60 @@ def test_projectless_board_skips_archived_projects():
     by_id = {p["id"]: p for p in list_projects(db, user)}
     board_names = [b["name"] for b in by_id[active.id]["boards"]]
     assert "Sama ploča" in board_names
+
+
+def _archived_project_with_board_and_column(db: Session, user: User):
+    active = Project(name="Aktivan", owner_id=user.id)
+    done = Project(name="Gotov", owner_id=user.id)
+    db.add_all([active, done])
+    db.flush()
+    board = Board(name="Ploča od Gotov", owner_id=user.id, project_id=done.id)
+    db.add(board)
+    db.flush()
+    column = BoardColumn(board_id=board.id, name="Todo", position=0)
+    db.add(column)
+    db.commit()
+    archive_project(done.id, db, user)
+    return active, board, column
+
+
+def test_no_new_board_into_archived_project():
+    import pytest
+    from fastapi import HTTPException
+
+    engine, db = _setup()
+    user = _user(db)
+    active, done_board, _col = _archived_project_with_board_and_column(db, user)
+
+    with pytest.raises(HTTPException) as exc:
+        create_board(BoardIn(name="Nova u Arhivi", project_id=done_board.project_id), db, user)
+    assert exc.value.status_code == 403
+    assert "Arhivi" in exc.value.detail
+
+    # unarchive → adding works again; adding to a still-archived project is refused,
+    # and adding to the active project was never blocked
+    unarchive_project(done_board.project_id, db, user)
+    ok = create_board(BoardIn(name="Nova nakon vraćanja", project_id=done_board.project_id), db, user)
+    assert ok["project_id"] == done_board.project_id
+    assert create_board(BoardIn(name="Nova u aktivnom", project_id=active.id), db, user)["project_id"] == active.id
+
+
+def test_no_new_task_on_archived_board():
+    import pytest
+    from fastapi import HTTPException
+
+    from backend.app import TaskIn, create_task
+
+    engine, db = _setup()
+    user = _user(db)
+    _active, done_board, column = _archived_project_with_board_and_column(db, user)
+
+    with pytest.raises(HTTPException) as exc:
+        create_task(TaskIn(column_id=column.id, title="Nova zadaća"), db, user)
+    assert exc.value.status_code == 403
+    assert "Arhivi" in exc.value.detail
+
+    # unarchive → tasks flow again into the same column
+    unarchive_project(done_board.project_id, db, user)
+    created = create_task(TaskIn(column_id=column.id, title="Nova zadaća"), db, user)
+    assert created["id"]
