@@ -593,7 +593,9 @@ class _BoardScreenState extends State<BoardScreen> {
               await _load();
             },
           ),
-          IconButton(onPressed: _addColumn, icon: const Icon(Icons.view_column_outlined), tooltip: 'Nova kolona'),
+          // 1.22.0: no new columns while the project is archived.
+          if (!widget.archived)
+            IconButton(onPressed: _addColumn, icon: const Icon(Icons.view_column_outlined), tooltip: 'Nova kolona'),
           IconButton(onPressed: _editBoard, icon: const Icon(Icons.edit_outlined), tooltip: 'Uredi ploču'),
         ],
       ),
@@ -647,12 +649,22 @@ class _BoardScreenState extends State<BoardScreen> {
                         onRename: _renameTodo,
                         onNotify: _notifyNabava,
                         onCopy: _todoEntries.isEmpty ? null : () => _copyTodoList(),
+                        // 1.22.0: Arhiva read-only — no new Nabava Stavke.
+                        allowAdd: !widget.archived,
                       ),
-                      if (columns.isEmpty)
+                      if (columns.isEmpty && !widget.archived)
                         const Center(
                           child: Padding(
                             padding: EdgeInsets.all(32),
                             child: Text('Nema kolona — dodajte prvu (ikonica kolona gore).',
+                                style: TextStyle(color: SR.muted)),
+                          ),
+                        ),
+                      if (columns.isEmpty && widget.archived)
+                        const Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(32),
+                            child: Text('Nema kolona (Arhiva — samo pregled).',
                                 style: TextStyle(color: SR.muted)),
                           ),
                         ),
@@ -814,6 +826,7 @@ class _TodoPanel extends StatelessWidget {
     required this.onRename,
     required this.onNotify,
     this.onCopy,
+    this.allowAdd = true, // 1.22.0: false under an archived project — no new Stavke
   });
 
   final String name;
@@ -824,6 +837,7 @@ class _TodoPanel extends StatelessWidget {
   final Future<void> Function(Map<String, dynamic>) onRename;
   final Future<void> Function() onNotify;
   final VoidCallback? onCopy;
+  final bool allowAdd;
 
   @override
   Widget build(BuildContext context) {
@@ -864,10 +878,10 @@ class _TodoPanel extends StatelessWidget {
                 for (final e in entries)
                   _TodoRow(entry: e, onToggle: onToggle, onDelete: onDelete, onRename: onRename),
                 if (entries.isEmpty)
-                  const Text(
-                    'Nema stavki — dodajte prvu ispod.',
+                  Text(
+                    allowAdd ? 'Nema stavki — dodajte prvu ispod.' : 'Nema stavki (Arhiva — samo pregled).',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: SR.muted, fontSize: 12),
+                    style: const TextStyle(color: SR.muted, fontSize: 12),
                   ),
               ],
             ),
@@ -885,11 +899,13 @@ class _TodoPanel extends StatelessWidget {
             label: const Text('Pošalji obavijest'),
           ),
           const SizedBox(height: 4),
-          OutlinedButton.icon(
-            onPressed: onAdd,
-            icon: const Icon(Icons.add, size: 16),
-            label: const Text('Dodaj stavku', style: TextStyle(fontSize: 12)),
-          ),
+          // 1.22.0: the add button disappears while the project is archived.
+          if (allowAdd)
+            OutlinedButton.icon(
+              onPressed: onAdd,
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text('Dodaj stavku', style: TextStyle(fontSize: 12)),
+            ),
         ],
       ),
     );

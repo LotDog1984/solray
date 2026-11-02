@@ -1339,22 +1339,25 @@ function renderKanban(board) {
       <h2><span class="column-dot"></span>${escapeHtml(state.defaultTodoListName || "Nabava")} <small class="column-count" title="${todoEntries.filter((entry) => !entry.is_done).length} otvoreno · ${todoEntries.length} ukupno">${todoEntries.filter((entry) => !entry.is_done).length}</small><button type="button" class="column-add" id="boardTodoCopy" title="Kopiraj cijeli popis" aria-label="Kopiraj popis">⧉</button></h2>
       <button type="button" class="secondary todo-notify" id="boardTodoNotify" title="Obavijesti sve korisnike u Nabava grupi da ima novih stavki">🔔 Pošalji obavijest</button>
       <div class="tasks" id="boardTodoEntries">${renderTodoEntries(todoEntries)}</div>
+      ${archived ? "" : `
+      <!-- 1.22.0: no new Nabava Stavke while the project is archived -->
       <form id="boardTodoForm" style="margin-top:10px;display:grid;gap:6px;">
         <input name="title" placeholder="Nova stavka (npr. nema više vijaka 6x60)..." required />
         <button type="submit" class="secondary">Dodaj stavku</button>
-      </form>
+      </form>`}
     </div>`;
 
   kanban.innerHTML =
     columnsHtml +
     todoPanel +
-    `
+    // 1.22.0: the “＋ Dodaj kolonu” tile disappears while the project is archived.
+    (archived ? "" : `
     <div class="column new-column-tile" style="--column-index:${board.columns.length + 1}">
       <form id="newColumnForm">
         <input name="name" placeholder="Nova kolona..." required />
         <button type="submit" class="secondary">＋ Dodaj kolonu</button>
       </form>
-    </div>`;
+    </div>`);
 
   bindBoardTodoEvents(board);
 

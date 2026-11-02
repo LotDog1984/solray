@@ -9,6 +9,8 @@ Contract points verified here (direct call style, like the other suites):
 - a projectless board lands in the first ACTIVE project, never an archived one
 - 1.21.0: NO new boards into an archived project, NO new tasks on its boards
   (Arhiva is read-only for additions — existing content stays fully editable)
+- 1.22.0: likewise NO new columns and NO new Nabava Stavke on its boards;
+  the global manual Nabava list (no board) is never blocked
 """
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -209,3 +211,56 @@ def test_no_new_task_on_archived_board():
     unarchive_project(done_board.project_id, db, user)
     created = create_task(TaskIn(column_id=column.id, title="Nova zadaća"), db, user)
     assert created["id"]
+
+
+def test_no_new_column_on_archived_board():
+    """1.22.0: no new columns on an archived project's board; existing ones
+    stay renamable/deletable (additions-only read-only, same as tasks)."""
+    import pytest
+    from fastapi import HTTPException
+
+    from backend.app import ColumnIn, create_column
+
+    engine, db = _setup()
+    user = _user(db)
+    _active, done_board, column = _archived_project_with_board_and_column(db, user)
+
+    with pytest.raises(HTTPException) as exc:
+        create_column(ColumnIn(board_id=done_board.id, name="Nova kolona"), db, user)
+    assert exc.value.status_code == 403
+    assert "Arhivi" in exc.value.detail
+
+    # unarchive → the column goes through on the very same board
+    unarchive_project(done_board.project_id, db, user)
+    created = create_column(ColumnIn(board_id=done_board.id, name="Nova kolona"), db, user)
+    col_row = db.get(BoardColumn, created["id"])
+    assert col_row.board_id == done_board.id
+    assert col_row.name == "Nova kolona"
+
+
+def test_no_new_nabava_entry_on_archived_board():
+    """1.22.0: no new Nabava Stavke on an archived project's board's To-Do
+    list. The GLOBAL manual Nabava list (board_id NULL) is never blocked —
+    same rule as project-less boards."""
+    import pytest
+    from fastapi import HTTPException
+
+    from backend.app import TodoEntryIn, add_nabava_item, add_todo_entry
+
+    engine, db = _setup()
+    user = _user(db)
+    _active, done_board, _column = _archived_project_with_board_and_column(db, user)
+
+    with pytest.raises(HTTPException) as exc:
+        add_todo_entry(done_board.id, TodoEntryIn(title="Čavli"), db, user)
+    assert exc.value.status_code == 403
+    assert "Arhivi" in exc.value.detail
+
+    # the global manual Nabava list is project-tied to nothing → stays open
+    manual = add_nabava_item(TodoEntryIn(title="Čavli"), db, user)
+    assert manual["title"] == "Čavli"
+
+    # unarchive → board Stavke flow again
+    unarchive_project(done_board.project_id, db, user)
+    created = add_todo_entry(done_board.id, TodoEntryIn(title="Čavli"), db, user)
+    assert created["title"] == "Čavli"

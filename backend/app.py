@@ -1931,6 +1931,8 @@ def add_member(board_id: int, db: Db, user: CurrentUser, username: Annotated[str
 @app.post("/api/columns")
 def create_column(payload: ColumnIn, db: Db, user: CurrentUser):
     ensure_board_access(db, user, payload.board_id)
+    # 1.22.0: Arhiva read-only — no new columns on an archived project's board.
+    ensure_not_in_archived_project(db, payload.board_id)
     column = BoardColumn(board_id=payload.board_id, name=payload.name.strip() or "Nova kolona", position=payload.position)
     db.add(column)
     db.commit()
@@ -2301,6 +2303,9 @@ def get_nabava(db: Db, user: CurrentUser):
 @app.post("/api/boards/{board_id}/todo")
 def add_todo_entry(board_id: int, payload: TodoEntryIn, db: Db, user: CurrentUser):
     board = ensure_board_access(db, user, board_id)
+    # 1.22.0: Arhiva read-only — no new Nabava Stavke on an archived
+    # project's board (the global manual list is not project-tied and stays open).
+    ensure_not_in_archived_project(db, board_id)
     todo = ensure_todo_list(db, board)
     title = (payload.title or "").strip()
     if not title:
