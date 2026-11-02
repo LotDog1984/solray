@@ -481,6 +481,22 @@ async function refreshUnreadCount() {
 async function refreshProjects() {
   await loadProjects();
   if (state.view === "archive") state.archive = null; // sync events can arch/unarch
+  // 1.21.1: browsing an OPEN archived project (boards layer OR its kanban in
+  // the app layer) — /api/projects won't contain it (archived projects are
+  // hidden there). Re-inject it from the Arhiva list instead of dropping the
+  // user onto the projects page; only when it is gone from Arhiva too
+  // (restored or deleted) does the kick-out below apply.
+  if (state.project && !currentProject()) {
+    try {
+      if (!state.archive) state.archive = await api.json("/api/projects/archived", "GET");
+      const archivedRow = state.archive.find((p) => p.id === state.project);
+      if (archivedRow && !state.projects.some((p) => p.id === archivedRow.id)) {
+        state.projects = [...state.projects, archivedRow];
+      }
+    } catch {
+      /* Arhiva list unavailable — fall through to the kick-out below */
+    }
+  }
   if (state.layer === "boards" && !currentProject()) state.layer = "projects";
   if (state.board && !allBoards().some((b) => b.id === state.board)) state.board = null;
   renderSidebar();
@@ -525,13 +541,13 @@ function goArchive() {
 }
 
 /* Open an archived project in the normal boards layer: the sidebar needs the
-   project in state.projects, so the archived row is injected on the fly. */
+   project in state.projects, so the archived row is injected on the fly.
+   1.21.1: replace any existing row so a stale unarchived copy can't hide the
+   archived flag (the row arrives with archived: true from the Arhiva list). */
 function openArchivedProject(projectId) {
   const project = (state.archive || []).find((p) => p.id === projectId);
   if (!project) return;
-  if (!state.projects.some((p) => p.id === projectId)) {
-    state.projects = [...state.projects, project];
-  }
+  state.projects = [...state.projects.filter((p) => p.id !== projectId), project];
   state.project = projectId;
   state.layer = "boards";
   state.board = null;
@@ -774,7 +790,10 @@ function renderSidebar() {
 
   let layerHtml = "";
   if (state.layer === "projects") {
-    const rows = state.projects
+    // 1.21.1: rows injected while an ARCHIVED project was open (archived: true)
+    // must never render as an active project here — they are already in Arhiva.
+    const liveProjects = state.projects.filter((p) => !p.archived);
+    const rows = liveProjects
       .map((project) => {
         const summary = projectSummary(project);
         return `
@@ -797,7 +816,7 @@ function renderSidebar() {
       })
       .join("");
     layerHtml = `
-      <div class="side-section-head"><div class="side-label">Projekti</div><span class="section-count">${state.projects.length}</span></div>
+      <div class="side-section-head"><div class="side-label">Projekti</div><span class="section-count">${liveProjects.length}</span></div>
       <div class="side-list project-list">${rows || '<div class="side-empty">Nema projekata</div>'}</div>
       <!-- 1.20.0: Arhiva — finished projects live here once archived. -->
       <button class="side-back archive-nav" id="navArchive" title="Arhiva"><span>🗄</span> Arhiva</button>
