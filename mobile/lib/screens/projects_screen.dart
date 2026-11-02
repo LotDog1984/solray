@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../theme.dart';
+import 'archive_screen.dart';
 import 'boards_screen.dart';
 import 'session_expired.dart';
 
@@ -96,12 +97,45 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
             onPressed: () => Navigator.pop(ctx, 'delete'),
             child: const Text('Obriši projekt', style: TextStyle(color: Color(0xFFDC2626))),
           ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'archive'),
+            child: const Text('🗄 Arhiviraj'),
+          ),
           TextButton(onPressed: () => Navigator.pop(ctx, 'cancel'), child: const Text('Odustani')),
           FilledButton(onPressed: () => Navigator.pop(ctx, 'save'), child: const Text('Spremi')),
         ],
       ),
     );
     if (action == null || !mounted) return;
+    if (action == 'archive') {
+      // 1.20.0: Arhiviraj — the project leaves the projects list but keeps
+      // everything; it reappears under Arhiva (web parity).
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: SR.panel,
+          title: const Text('Arhiviraj projekt'),
+          content: Text(
+              'Arhivirati projekt "${p['name']}"? Ne brišu se ni ploče ni taskovi — projekt ide u Arhivu.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Odustani')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Arhiviraj')),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      try {
+        await widget.api.post('/api/projects/${p['id']}/archive', <String, dynamic>{});
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✓ Projekt prebačen u Arhivu')));
+        await _load();
+      } on AuthExpired {
+        if (mounted) forceLoginScreen(context, widget.api);
+      } catch (e) {
+        _showError(e);
+      }
+      return;
+    }
     try {
       if (action == 'delete') {
         final confirmed = await showDialog<bool>(
@@ -143,6 +177,22 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
         child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // 1.20.0: Arhiva — finished projects that left the projects list.
+          Card(
+            margin: const EdgeInsets.only(bottom: 12),
+            child: ListTile(
+              leading: const Icon(Icons.archive_outlined, color: SR.cyan),
+              title: const Text('Arhiva', style: TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: const Text('Arhivirani projekti — zadaci i datoteke su sačuvani.', style: TextStyle(color: SR.muted, fontSize: 11)),
+              trailing: const Icon(Icons.chevron_right, color: SR.muted),
+              onTap: () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => ArchiveProjectsScreen(api: widget.api)),
+                );
+                await _load();
+              },
+            ),
+          ),
           if (_error != null)
             Center(
               child: Column(

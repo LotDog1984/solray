@@ -55,6 +55,8 @@ const state = {
   searchLoading: false,
   unreadCount: 0,
   filesMode: localStorage.getItem("solray_files_mode") || "list", // "list" | "grid"
+  // 1.20.0: Arhiva — cached list of archived projects (null = not loaded).
+  archive: null,
 };
 
 const app = document.querySelector("#app");
@@ -478,6 +480,7 @@ async function refreshUnreadCount() {
 
 async function refreshProjects() {
   await loadProjects();
+  if (state.view === "archive") state.archive = null; // sync events can arch/unarch
   if (state.layer === "boards" && !currentProject()) state.layer = "projects";
   if (state.board && !allBoards().some((b) => b.id === state.board)) state.board = null;
   renderSidebar();
@@ -504,6 +507,114 @@ function goNabava() {
   renderSidebar();
   renderView();
   renderNabava();
+}
+
+/* 1.20.0: Arhiva — the projects-layer view holding every archived project.
+   Nothing is filtered inside an archived project: opening one shows its
+   boards/kanban/tasks/files exactly like an active project. */
+function goArchive() {
+  state.layer = "projects";
+  state.project = null;
+  state.board = null;
+  state.view = "archive";
+  state.searchResults = null;
+  state.archive = null; // reload every open — archiving may have changed
+  renderSidebar();
+  renderView();
+  renderArchive();
+}
+
+/* Open an archived project in the normal boards layer: the sidebar needs the
+   project in state.projects, so the archived row is injected on the fly. */
+function openArchivedProject(projectId) {
+  const project = (state.archive || []).find((p) => p.id === projectId);
+  if (!project) return;
+  if (!state.projects.some((p) => p.id === projectId)) {
+    state.projects = [...state.projects, project];
+  }
+  state.project = projectId;
+  state.layer = "boards";
+  state.board = null;
+  state.view = "kanban";
+  state.searchResults = null;
+  renderSidebar();
+  renderView();
+}
+
+async function renderArchive() {
+  const view = document.querySelector("#archiveView");
+  if (!view) return;
+  if (!state.archive) {
+    view.innerHTML = '<div class="archive-status">Učitavanje arhive…</div>';
+    try {
+      state.archive = await api.json("/api/projects/archived");
+    } catch (error) {
+      view.innerHTML = `<div class="archive-status">${escapeHtml(error.message)}<br /><button id="archiveRetry">Pokušaj ponovno</button></div>`;
+      const retry = view.querySelector("#archiveRetry");
+      if (retry) retry.onclick = () => { state.archive = null; renderArchive(); };
+      return;
+    }
+  }
+  const projects = state.archive || [];
+  const title = `
+    <div class="archive-head">
+      <h1>🗄 Arhiva</h1>
+      <p class="muted">Završeni projekti. Otvorite projekt za zadatke i datoteke — sve je tu sačuvano. „Vrati iz Arhive” projekt vraća na stranicu projekata; ništa se automatski ne briše.</p>
+    </div>`;
+  const cards = projects
+    .map((project) => {
+      const summary = projectSummary(project);
+      return `
+      <div class="archive-card">
+        <button class="archive-open" data-open-archive="${project.id}" aria-label="Otvori arhivirani projekt ${escapeHtml(project.name)}">
+          <span class="archive-title">${escapeHtml(project.name)}</span>
+          <span class="archive-meta">${summary.boardCount} ploče <i>·</i> ${summary.openTaskCount}/${summary.taskCount} zadataka <i>·</i> ${summary.progress}% gotovo</span>
+        </button>
+        <div class="archive-actions">
+          <button class="secondary" data-unarchive="${project.id}" title="Vrati projekt na stranicu projekata">⤴ Vrati iz Arhive</button>
+          <button class="secondary danger archive-delete" data-delete-archive="${project.id}" title="Trajno obriši projekt s pločama i zadatcima">Obriši</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+  view.innerHTML =
+    title +
+    `<div class="archive-list">${cards || '<div class="archive-status">Arhiva je prazna — arhivirani projekti navode se ovdje.</div>'}</div>`;
+
+  view.querySelectorAll("[data-open-archive]").forEach((btn) => {
+    btn.onclick = () => openArchivedProject(Number(btn.dataset.openArchive));
+  });
+  view.querySelectorAll("[data-unarchive]").forEach((btn) => {
+    btn.onclick = async (event) => {
+      event.stopPropagation();
+      const id = Number(btn.dataset.unarchive);
+      try {
+        await api.json(`/api/projects/${id}/unarchive`, "POST");
+        showToast("✓ Projekt vraćen iz Arhive");
+        state.archive = null;
+        await renderArchive();
+        await refreshProjects();
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+  });
+  view.querySelectorAll("[data-delete-archive]").forEach((btn) => {
+    btn.onclick = async (event) => {
+      event.stopPropagation();
+      const id = Number(btn.dataset.deleteArchive);
+      const project = (state.archive || []).find((p) => p.id === id);
+      if (!confirm(`Trajno obrisati arhivirani projekt "${project?.name}" sa svim pločama i zadatcima?`)) return;
+      try {
+        await api.request(`/api/projects/${id}`, { method: "DELETE" });
+        showToast("✓ Projekt obrisan");
+        state.archive = null;
+        await renderArchive();
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+  });
 }
 
 function goNotifications() {
@@ -679,6 +790,7 @@ function renderSidebar() {
           <div class="project-progress-track"><span style="width:${summary.progress}%"></span></div>
           <div class="edit-menu" hidden>
             <button class="menu-rename" data-project-id="${project.id}">Preimenuj</button>
+            <button class="menu-archive" data-project-id="${project.id}">🗄 Arhiviraj</button>
             <button class="menu-delete danger" data-project-id="${project.id}">Obriši</button>
           </div>
         </div>`;
@@ -687,6 +799,8 @@ function renderSidebar() {
     layerHtml = `
       <div class="side-section-head"><div class="side-label">Projekti</div><span class="section-count">${state.projects.length}</span></div>
       <div class="side-list project-list">${rows || '<div class="side-empty">Nema projekata</div>'}</div>
+      <!-- 1.20.0: Arhiva — finished projects live here once archived. -->
+      <button class="side-back archive-nav" id="navArchive" title="Arhiva"><span>🗄</span> Arhiva</button>
       <form id="newProjectForm" class="side-form">
         <input name="name" placeholder="Novi projekt..." required />
         <button type="submit" title="Dodaj projekt" aria-label="Dodaj projekt">+</button>
@@ -716,6 +830,7 @@ function renderSidebar() {
       <div class="side-section-head"><div class="side-label">${escapeHtml(project?.name || "Ploče")}</div><span class="section-count">${summary.boardCount}</span></div>
       <div class="project-context-meta">${summary.openTaskCount} otvoreno <i>·</i> ${summary.taskCount} zadataka</div>
       <div class="side-list board-list">${rows || '<div class="side-empty">Nema ploča</div>'}</div>
+      ${project?.archived ? `<div class="archive-context-note" id="archiveContextNote">🗄 Arhivirano <button id="unarchiveSidebar" title="Vrati projekt stranicu projekata">Vrati iz Arhive</button></div>` : ""}
       ${project ? `
       <form id="newBoardForm" class="side-form">
         <input name="name" placeholder="Nova ploča..." required />
@@ -824,6 +939,16 @@ function bindSidebarEvents(sidebar) {
       await api.request(`/api/boards/${id}`, { method: "DELETE" });
       return true;
     },
+    // 1.20.0: 🗄 Arhiviraj in the project menu — hides the project from the
+    // project page, everything moves into Arhiva unharmed.
+    onArchive: async (id) => {
+      const project = state.projects.find((p) => p.id === id);
+      if (!confirm(`Arhivirati projekt "${project?.name}"? Ne brišu se ni ploče ni zadaci — projekt ide u Arhivu.`)) return false;
+      await api.json(`/api/projects/${id}/archive`, "POST");
+      showToast("✓ Projekt prebačen u Arhivu");
+      state.archive = null; // Arhiva list refreshes on next open
+      return true;
+    },
     afterChange: refreshProjects,
   });
 
@@ -843,6 +968,26 @@ function bindSidebarEvents(sidebar) {
 
   const nabavaBtn = sidebar.querySelector("#navNabava");
   if (nabavaBtn) nabavaBtn.onclick = () => goNabava();
+
+  // 1.20.0: Arhiva lives in the projects layer, under the project list.
+  const archiveBtn = sidebar.querySelector("#navArchive");
+  if (archiveBtn) archiveBtn.onclick = () => goArchive();
+
+  // 1.20.0: inside an archived project's boards layer — bring it back.
+  const unarchiveSidebar = sidebar.querySelector("#unarchiveSidebar");
+  if (unarchiveSidebar) {
+    unarchiveSidebar.onclick = async () => {
+      const project = currentProject();
+      if (!project) return;
+      try {
+        await api.json(`/api/projects/${project.id}/unarchive`, "POST");
+        showToast("✓ Projekt vraćen iz Arhive");
+        await refreshProjects();
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+  }
 
   // Settings and logout live in the persistent icon rail now.
 }
@@ -881,6 +1026,19 @@ function bindCardMenus(root, handlers) {
       const id = Number(btn.dataset.projectId || btn.dataset.boardId);
       try {
         if (await handlers.onDelete(id, isProject ? "project" : "board")) await handlers.afterChange();
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+  });
+  // 1.20.0: 🗄 Arhiviraj exists only in the project menu.
+  root.querySelectorAll(".menu-archive").forEach((btn) => {
+    btn.onclick = async (event) => {
+      event.stopPropagation();
+      const id = Number(btn.dataset.projectId);
+      try {
+        if (!handlers.onArchive || !(await handlers.onArchive(id))) return;
+        await handlers.afterChange();
       } catch (error) {
         alert(error.message);
       }
@@ -934,6 +1092,11 @@ function renderView() {
     return;
   }
   if (state.layer !== "app") {
+    if (state.view === "archive") {
+      content.innerHTML = '<div id="archiveView"></div>';
+      renderArchive(); // Arhiva is a main-page view, like Obavijesti (1.20.0)
+      return;
+    }
     if (state.view === "nabava") {
       content.innerHTML = '<div id="nabavaView"></div>';
       renderNabava(); // Nabava is a main-page view, like Obavijesti

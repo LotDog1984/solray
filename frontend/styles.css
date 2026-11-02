@@ -1907,3 +1907,39 @@ span.nabava-origin {
   z-index: 9999;
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* --------------------- 1.20.0: Arhiva (project archive) --------------------- */
+.edit-menu .menu-archive { background: var(--panel-deep); color: var(--text); border: 1px solid var(--line); }
+.edit-menu .menu-archive:hover { color: var(--text); border-color: var(--cyan); }
+
+/* Sidebar: the Arhiva entry under the project list (reuses .side-back frame) */
+.archive-nav { margin: 8px 0 6px; justify-content: flex-start; }
+.archive-nav span { font-size: 12px; }
+
+/* Boards layer: archived-project note under the section head */
+.archive-context-note { margin: 4px 2px 0; padding: 7px 9px; display: flex; align-items: center; gap: 9px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.05); color: var(--muted); font: 10px "JetBrains Mono",ui-monospace,monospace; }
+.archive-context-note button { margin-left: auto; min-height: 27px; padding: 0 9px; border-radius: 9px; border: 1px solid var(--line); background: transparent; color: var(--text); font-size: 10px; }
+.archive-context-note button:hover { background: rgba(255,255,255,.10); box-shadow: none; }
+
+/* Main-page archive view */
+.archive-wrap, #archiveView { max-width: 760px; margin: 0 auto; padding: 24px 16px; }
+.archive-head h1 { font-size: 26px; margin: 0; }
+.archive-head p { margin: 8px 0 0; font-size: 13px; }
+.archive-list { display: grid; gap: 10px; margin-top: 16px; }
+.archive-card { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.02)); }
+.archive-card .archive-open { flex: 1; min-width: 0; display: grid; gap: 4px; text-align: left; background: transparent; border: 0; padding: 0; color: var(--text); }
+.archive-card .archive-title { font-weight: 700; font-size: 15px; text-align: left; }
+.archive-card .archive-meta { color: var(--muted); font: 10px "JetBrains Mono",ui-monospace,monospace; }
+.archive-card .archive-meta i { color: var(--muted-2); font-style: normal; }
+.archive-actions { display: flex; gap: 7px; }
+.archive-actions .secondary { min-height: 34px; }
+.archive-actions .archive-delete:hover { color: #fff; background: var(--danger); box-shadow: none; }
+.archive-status { padding: 18px 4px; color: var(--muted); font-size: 13px; }
+.archive-status button { margin-top: 10px; min-height: 34px; }
+
+@media (max-width: 560px) {
+  #archiveView { padding: 14px 10px 24px; }
+  .archive-card { flex-direction: column; align-items: stretch; }
+  .archive-actions { margin-top: 4px; }
+  .archive-actions .secondary { flex: 1; }
+}

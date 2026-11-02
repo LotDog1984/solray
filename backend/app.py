@@ -120,6 +120,9 @@ class Project(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    # 1.20.0: archived projects leave the project page but keep everything
+    # (boards, tasks, files) browsable from the Arhiva view.
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     boards: Mapped[list["Board"]] = relationship(cascade="all, delete-orphan", order_by="Board.created_at")
 
@@ -987,6 +990,9 @@ def startup() -> None:
         conn.execute(text("ALTER TABLE todo_lists ALTER COLUMN board_id DROP NOT NULL"))
         # 1.10.0: when a Stavka was ticked as bought (orders checked items)
         conn.execute(text("ALTER TABLE todo_entries ADD COLUMN IF NOT EXISTS checked_at TIMESTAMPTZ NULL"))
+        # 1.20.0: project archiving — a finished project leaves the project
+        # page without being deleted.
+        conn.execute(text("ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE"))
         # 1.15.0: per-user attribution — who completed a task, who added/ticked/
         # edited a Stavka, and who touched a task last. All nullable.
         conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_by_id INTEGER"))
@@ -1478,11 +1484,27 @@ def ensure_project_manage(db: Session, user: User, project: Project) -> None:
     return None
 
 
-@app.get("/api/projects")
-def list_projects(db: Db, user: CurrentUser):
-    """Shared workspace: projects, boards, and additive workload counts."""
+def project_payload(project: Project, boards: list[dict]) -> dict:
+    """Shared serialization for the projects lists (1.20.0: archived flag)."""
+    return {
+        "id": project.id,
+        "name": project.name,
+        "archived": bool(project.archived),
+        "boards": boards,
+        "board_count": len(boards),
+        "task_count": sum(board["task_count"] for board in boards),
+        "open_task_count": sum(board["open_task_count"] for board in boards),
+        "completed_task_count": sum(board["completed_task_count"] for board in boards),
+    }
+
+
+def build_project_rows(db: Session, archived: bool) -> list[dict]:
+    """Projects (filtered by archive state) with additive workload counts.
+    Each project row carries its boards with per-board task counts."""
     board_rows = db.scalars(select(Board).order_by(Board.created_at)).all()
-    projects = db.scalars(select(Project).order_by(Project.created_at)).all()
+    projects = (
+        db.scalars(select(Project).where(Project.archived.is_(archived)).order_by(Project.created_at)).all()
+    )
     counts = db.execute(
         select(
             BoardColumn.board_id,
@@ -1511,19 +1533,23 @@ def list_projects(db: Db, user: CurrentUser):
             "completed_task_count": completed_count,
         })
 
-    out = []
-    for project in projects:
-        boards = boards_by_project.get(project.id, [])
-        out.append({
-            "id": project.id,
-            "name": project.name,
-            "boards": boards,
-            "board_count": len(boards),
-            "task_count": sum(board["task_count"] for board in boards),
-            "open_task_count": sum(board["open_task_count"] for board in boards),
-            "completed_task_count": sum(board["completed_task_count"] for board in boards),
-        })
-    return out
+    return [project_payload(project, boards_by_project.get(project.id, [])) for project in projects]
+
+
+@app.get("/api/projects/archived")
+def list_archived_projects(db: Db, user: CurrentUser):
+    """1.20.0: the Arhiva view — archived projects only, same shape as
+    /api/projects (additive field ``archived: true``). Boards, tasks and
+    files of an archived project stay fully browsable; nothing is filtered
+    inside the project."""
+    return build_project_rows(db, archived=True)
+
+
+@app.get("/api/projects")
+def list_projects(db: Db, user: CurrentUser):
+    """Shared workspace: projects, boards, and additive workload counts.
+    1.20.0: archived projects are hidden here — they live in Arhiva."""
+    return build_project_rows(db, archived=False)
 
 
 @app.post("/api/projects")
@@ -1584,6 +1610,33 @@ def delete_project(project_id: int, db: Db, user: CurrentUser):
     return {"ok": True}
 
 
+@app.post("/api/projects/{project_id}/archive")
+def archive_project(project_id: int, db: Db, user: CurrentUser):
+    """1.20.0: put a project into Arhiva — hidden from the project page,
+    everything inside stays intact. Additive endpoint."""
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Projekt ne postoji")
+    ensure_project_manage(db, user, project)
+    project.archived = True
+    db.commit()
+    notify_change("projects")
+    return {"id": project.id, "name": project.name, "archived": True}
+
+
+@app.post("/api/projects/{project_id}/unarchive")
+def unarchive_project(project_id: int, db: Db, user: CurrentUser):
+    """1.20.0: move a project back out of Arhiva (project page is active again)."""
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Projekt ne postoji")
+    ensure_project_manage(db, user, project)
+    project.archived = False
+    db.commit()
+    notify_change("projects")
+    return {"id": project.id, "name": project.name, "archived": False}
+
+
 @app.post("/api/boards")
 def create_board(payload: BoardIn, db: Db, user: CurrentUser):
     if payload.project_id is not None:
@@ -1593,8 +1646,10 @@ def create_board(payload: BoardIn, db: Db, user: CurrentUser):
         ensure_project_manage(db, user, project)
     else:
         # Shared workspace: a board without an explicit project goes into the
-        # first existing project — never into a per-user "Glavni projekt".
-        project = db.scalar(select(Project).order_by(Project.created_at))
+        # first existing ACTIVE project — never into a per-user "Glavni
+        # projekt" (1.20.0: archived projects are skipped; if no active
+        # project exists, a fresh "Glavni projekt" is created).
+        project = db.scalar(select(Project).where(Project.archived.is_(False)).order_by(Project.created_at))
         if not project:
             project = Project(name="Glavni projekt", owner_id=user.id)
             db.add(project)
@@ -1630,8 +1685,13 @@ def search_everything(db: Db, user: CurrentUser, q: str = ""):
     lowered = query.lower()
 
     # Shared workspace: search across everything — same visibility for all users.
-    board_rows = db.scalars(select(Board)).all()
-    projects = db.scalars(select(Project)).all()
+    # 1.20.0: archived projects are put away — they (and their boards, tasks
+    # and Nabava entries) no longer surface in the global search.
+    board_rows = [b for b in db.scalars(select(Board)).all()]
+    projects = [p for p in db.scalars(select(Project)).all()]
+    archived_ids = {p.id for p in projects if p.archived}
+    board_rows = [b for b in board_rows if b.project_id not in archived_ids]
+    projects = [p for p in projects if p.id not in archived_ids]
     project_map = {p.id: p for p in projects}
 
     results = []
@@ -1709,15 +1769,20 @@ def search_everything(db: Db, user: CurrentUser, q: str = ""):
     # 4) Nabava entries (1.9.3): Stavke from every board's To-Do list plus the
     # ones added manually in the global list. Board-origin results open their
     # board; manual ones open the global Nabava view in the UIs.
-    nabava_rows = db.execute(
-        select(TodoEntry, TodoList, Board, Project)
-        .join(TodoList, TodoEntry.todo_list_id == TodoList.id)
-        .outerjoin(Board, TodoList.board_id == Board.id)
-        .outerjoin(Project, Board.project_id == Project.id)
-        .where(TodoEntry.title.ilike(like))
-        .order_by(TodoEntry.created_at.desc())
-        .limit(50)
-    ).all()
+    nabava_rows = [
+        row
+        for row in db.execute(
+            select(TodoEntry, TodoList, Board, Project)
+            .join(TodoList, TodoEntry.todo_list_id == TodoList.id)
+            .outerjoin(Board, TodoList.board_id == Board.id)
+            .outerjoin(Project, Board.project_id == Project.id)
+            .where(TodoEntry.title.ilike(like))
+            .order_by(TodoEntry.created_at.desc())
+            .limit(50)
+        ).all()
+        # 1.20.0: skip entries whose board lives in an archived project.
+        if not (row[2].project_id in archived_ids if row[2] else False)
+    ]
     for entry, todo, board, project in nabava_rows:
         origin = (
             f"{project.name} → {board.name}" if board and project else (board.name if board else "Ručno dodano")

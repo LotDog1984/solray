@@ -39,6 +39,7 @@ def test_list_projects_includes_board_and_project_task_counts():
         {
             "id": project.id,
             "name": "House",
+            "archived": False,
             "boards": [
                 {
                     "id": board.id,
@@ -65,6 +66,7 @@ def test_list_projects_includes_board_and_project_task_counts():
         {
             "id": empty_project.id,
             "name": "Empty",
+            "archived": False,
             "boards": [],
             "board_count": 0,
             "task_count": 0,

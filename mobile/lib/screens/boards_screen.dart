@@ -13,11 +13,18 @@ class BoardsScreen extends StatefulWidget {
     required this.api,
     required this.projectId,
     required this.projectName,
+    // 1.20.0: opening an ARCHIVED project (from Arhiva). /api/projects no
+    // longer lists it, so its boards are passed in by the caller and the
+    // AppBar offers „Vrati iz Arhive".
+    this.archivedBoards,
+    this.archived = false,
   });
 
   final Api api;
   final int projectId;
   final String projectName;
+  final List<Map<String, dynamic>>? archivedBoards;
+  final bool archived;
 
   @override
   State<BoardsScreen> createState() => _BoardsScreenState();
@@ -40,14 +47,19 @@ class _BoardsScreenState extends State<BoardsScreen> {
     try {
       final projects = await widget.api.get('/api/projects') as List<dynamic>;
       final all = List<Map<String, dynamic>>.from(projects.map((p) => Map<String, dynamic>.from(p as Map)));
-      final mine = all.firstWhere(
-        (p) => p['id'] == widget.projectId,
-        orElse: () => {'id': widget.projectId, 'name': widget.projectName, 'boards': []},
-      );
+      Map<String, dynamic>? mine;
+      for (final p in all) {
+        if (p['id'] == widget.projectId) mine = p;
+      }
+      // 1.20.0: archived projects aren't in /api/projects — fall back to the
+      // board list passed from Arhiva so their boards stay browsable here.
+      mine ??= (widget.archived && widget.archivedBoards != null)
+          ? {'id': widget.projectId, 'name': widget.projectName, 'boards': widget.archivedBoards}
+          : {'id': widget.projectId, 'name': widget.projectName, 'boards': []};
       if (!mounted) return;
       setState(() {
         _allProjects = all;
-        _boards = List<Map<String, dynamic>>.from((mine['boards'] as List<dynamic>? ?? [])
+        _boards = List<Map<String, dynamic>>.from((mine!['boards'] as List<dynamic>? ?? [])
             .map((b) => Map<String, dynamic>.from(b as Map)));
         _loading = false;
       });
@@ -165,12 +177,35 @@ class _BoardsScreenState extends State<BoardsScreen> {
     }
   }
 
+  Future<void> _unarchive() async {
+    try {
+      await widget.api.post('/api/projects/${widget.projectId}/unarchive', <String, dynamic>{});
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('✓ Projekt vraćen iz Arhive')));
+      await _load();
+    } on AuthExpired {
+      if (mounted) forceLoginScreen(context, widget.api);
+    } catch (e) {
+      _showError(e);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(
-        title: Text(widget.projectName),
+        title: Text(widget.archived ? '🗄 ${widget.projectName}' : widget.projectName),
+        actions: widget.archived
+            ? [
+                IconButton(
+                  tooltip: 'Vrati iz Arhive',
+                  icon: const Icon(Icons.unarchive_outlined),
+                  onPressed: _unarchive,
+                ),
+              ]
+            : null,
         bottom: _boards.isEmpty
             ? null
             : PreferredSize(
