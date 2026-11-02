@@ -562,7 +562,9 @@ class _BoardScreenState extends State<BoardScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(_board?['name'] as String? ?? widget.boardName),
-            if (!_loading) Text('${project?['name'] ?? 'Projekt'}  ·  $openTasks otvoreno  ·  $totalTasks zadataka  ·  $progress% gotovo',
+            // 1.21.2: 🗄 prefix while open from Arhiva — browsing the board's
+            // tasks still reads as an archived project, like the web chip.
+            if (!_loading) Text("${widget.archived ? '🗄 ' : ''}${project?['name'] ?? 'Projekt'}  ·  $openTasks otvoreno  ·  $totalTasks zadataka  ·  $progress% gotovo",
                 style: const TextStyle(color: SR.muted, fontSize: 10, fontWeight: FontWeight.w500)),
           ],
         ),

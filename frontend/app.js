@@ -1132,13 +1132,19 @@ function renderView() {
   const boardTaskCount = summary?.total ?? 0;
   const boardOpenCount = summary?.open ?? 0;
   const team = state.users.slice(0, 4);
+  // 1.21.2: while an ARCHIVED project is open, its default board header lacks
+  // the sidebar context — a subtle 🗄 Arhiva chip next to the heading keeps
+  // “this is Arhiva, not a working project” visible while browsing tasks.
+  const archivedChip = project?.archived
+    ? `<span class="archive-chip" title="Projekt je u Arhivi — vratite ga da biste nastavili graditi">🗄 Arhiva</span>`
+    : "";
   // Board tabs: only Ploča and Datoteke (Postavke is on the icon rail,
   // Obavijesti and Nabava are main views).
   const tabs = `
     ${board ? `<div class="board-breadcrumb">Projekti <span>/</span> ${escapeHtml(project?.name || "Projekt")} <span>/</span> <b>${escapeHtml(board.name)}</b></div>` : ""}
     <div class="topbar">
       <div class="board-heading">
-        <h1>${escapeHtml(heading)}</h1>
+        <h1>${escapeHtml(heading)}${archivedChip}</h1>
         ${board ? `      <div class="board-subtitle"><span id="boardOpenCount">${boardOpenCount} otvoreno</span><i>·</i><span id="boardTotalCount">${boardTaskCount} zadataka</span><i>·</i><span id="boardProgressCount">${summary.progress}% gotovo</span></div>` : ""}
       </div>
       ${board ? `<div class="team-stack" aria-label="Članovi tima">${team.map((user, index) => `<span class="team-avatar avatar-${index + 1}" title="${escapeHtml(user.display_name || user.username)}">${escapeHtml((user.display_name || user.username || "?").split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span>`).join("")}${state.users.length > team.length ? `<span class="team-more">+${state.users.length - team.length}</span>` : ""}</div>` : ""}
